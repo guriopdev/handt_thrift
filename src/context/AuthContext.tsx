@@ -1,7 +1,7 @@
 "use client";
 
-import { createContext, useContext, useState, ReactNode, useEffect } from "react";
-import { useRouter, usePathname } from "next/navigation";
+import { createContext, useContext, useState, ReactNode, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 
 export interface User {
@@ -26,11 +26,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const router = useRouter();
-  const pathname = usePathname();
-  const supabase = createClient();
 
-  // Listen to Supabase Auth State Changes
+  // Lazily create the Supabase client — only runs in the browser after mount.
+  // This prevents the client from being instantiated during Next.js SSR/prerendering
+  // when environment variables may not be available (e.g. on Vercel build).
+  const supabaseRef = useRef<ReturnType<typeof createClient> | null>(null);
+
+  function getSupabase() {
+    if (!supabaseRef.current) {
+      supabaseRef.current = createClient();
+    }
+    return supabaseRef.current;
+  }
+
+  // Listen to Supabase Auth State Changes — only runs on the client
   useEffect(() => {
+    const supabase = getSupabase();
+
     const fetchSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
@@ -55,22 +67,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       subscription.unsubscribe();
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleUserSession = async (supabaseUser: any) => {
-    // 1. Core user from Supabase
+    const supabase = getSupabase();
     const baseUser = {
       id: supabaseUser.id,
       email: supabaseUser.email,
     };
 
-    // 2. Fetch authenticated profile directly from Postgres
-    const { data: dbProfile } = await supabase.from('profiles').select('*').eq('id', baseUser.id).single();
-    
+    // Fetch profile from Postgres
+    const { data: dbProfile } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', baseUser.id)
+      .single();
+
     if (dbProfile) {
       setUser({ ...baseUser, ...dbProfile });
     } else {
-      // 3. Draft fresh profile structure if not yet initialized in database
       const newProfile = {
         name: supabaseUser.user_metadata?.full_name || supabaseUser.user_metadata?.name || "",
         number: "",
@@ -82,6 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const loginWithGoogle = async () => {
+    const supabase = getSupabase();
     await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
@@ -91,6 +108,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = async () => {
+    const supabase = getSupabase();
     setLoading(true);
     await supabase.auth.signOut();
     setUser(null);
@@ -100,16 +118,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const updateProfile = async (data: Partial<User>) => {
     if (!user) return;
+    const supabase = getSupabase();
     const updated = { ...user, ...data };
-    
-    // Save to authentic Postgres DB securely using Row Level Security overrides gracefully
+
     await supabase.from('profiles').upsert({
       id: user.id,
       name: updated.name,
       number: updated.number,
       location: updated.location,
     });
-    
+
     setUser(updated);
     router.push("/dashboard");
   };
