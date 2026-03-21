@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { 
   UserCircle, MapPin, Phone, CheckCircle2, 
@@ -75,12 +75,8 @@ export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState("profile");
 
   // Dummy State for Functionality
-  const [products, setProducts] = useState<Product[]>([
-    { id: 1, title: "Vintage Oversized Denim Jacket", price: "₹850", condition: "Like New", image: "https://images.unsplash.com/photo-1576995853123-5a10305d93c0?auto=format&fit=crop&q=80", sellerId: "user2", sellerName: "Aman Gupta", status: "Currently in Deal" },
-    { id: 2, title: "Retro Band Graphic Tee", price: "₹300", condition: "Good", image: "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&q=80", sellerId: "user3", sellerName: "Neha Sharma", status: "In Stock" },
-    { id: 3, title: "Nike Air Force 1s (Custom)", price: "₹1200", condition: "Fair", image: "https://images.unsplash.com/photo-1595950653106-6c9ebd614d3a?auto=format&fit=crop&q=80", sellerId: "user4", sellerName: "Rahul Kumar", status: "In Stock" },
-    { id: 4, title: "Pastel Knitted Sweater", price: "₹600", condition: "Like New", image: "https://images.unsplash.com/photo-1576566588028-4147f3842f27?auto=format&fit=crop&q=80", sellerId: "user5", sellerName: "Simran Kaur", status: "In Stock" },
-  ]);
+  // Start empty — all products come exclusively from Supabase DB
+  const [products, setProducts] = useState<Product[]>([]);
 
   const [chats, setChats] = useState<Chat[]>([]);
 
@@ -102,20 +98,33 @@ export default function DashboardPage() {
   const [negotiatedPrice, setNegotiatedPrice] = useState("");
   const [meetupLocation, setMeetupLocation] = useState("");
 
-  const supabase = createClient();
+  // Lazily create Supabase client — only in the browser, never during SSR prerendering
+  const supabaseRef = useRef<ReturnType<typeof createClient> | null>(null);
+  function getSupabase() {
+    if (!supabaseRef.current) supabaseRef.current = createClient();
+    return supabaseRef.current;
+  }
 
   const fetchGlobalData = async () => {
-    // 1. Fetch Global Products
-    const { data: pData } = await supabase.from('products').select('*').order('created_at', { ascending: false });
-    if (pData && pData.length > 0) {
-      setProducts(pData.map((p: any) => ({
+    const supabase = getSupabase();
+    // 1. Fetch ALL products from Supabase (always overwrite local state)
+    const { data: pData, error: pError } = await supabase
+      .from('products')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (!pError) {
+      // Always set — even empty array clears stale dummy data
+      setProducts((pData ?? []).map((p: any) => ({
         id: p.id, title: p.title, price: p.price, condition: p.condition,
         image: p.image_url, sellerId: p.seller_id, sellerName: p.seller_name, status: p.status
       })));
     }
-    
+
     // 2. Fetch Global Offers
-    const { data: oData } = await supabase.from('offers').select('*').order('created_at', { ascending: false });
+    const { data: oData } = await supabase
+      .from('offers')
+      .select('*')
+      .order('created_at', { ascending: false });
     if (oData) {
       setPendingOffers(oData.map((o: any) => ({
         id: o.id, productId: o.product_id, buyerName: o.buyer_name,
@@ -141,6 +150,7 @@ export default function DashboardPage() {
       fetchGlobalData();
 
       // Realtime Multi-Channel Event Subscriptions
+      const supabase = getSupabase();
       const channels = supabase.channel('custom-all-channel')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => { fetchGlobalData(); })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'offers' }, () => { fetchGlobalData(); })
@@ -256,18 +266,21 @@ export default function DashboardPage() {
   };
 
   const handleApproveOffer = async (offer: Offer) => {
+    const supabase = getSupabase();
     await supabase.from('products').update({ status: 'Sold' }).eq('id', offer.productId);
     await supabase.from('offers').update({ status: 'approved' }).eq('id', offer.id);
     showToast("Deal Approved! Item is now marked as Sold.");
   };
 
   const handleRejectOffer = async (offer: Offer) => {
+    const supabase = getSupabase();
     await supabase.from('products').update({ status: 'In Stock' }).eq('id', offer.productId);
     await supabase.from('offers').update({ status: 'rejected' }).eq('id', offer.id);
     showToast("Offer rejected. Item is back in stock.");
   };
 
   const handleSendDeal = async () => {
+    const supabase = getSupabase();
     if (!negotiatedPrice || !meetupLocation) {
       showToast("Please provide the negotiated price and meetup location.");
       return;
@@ -295,13 +308,33 @@ export default function DashboardPage() {
 
   const handleSellSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const supabase = getSupabase();
     if (!sellImage) {
       showToast("Please upload an image for your listing.");
       return;
     }
 
+    showToast("Uploading image...");
     const cleanTitle = sellTitle.trim().slice(0, 60);
     const cleanPrice = Math.abs(parseInt(sellPrice) || 0).toString().slice(0, 7);
+
+    // Upload actual image to Supabase Storage
+    const fileExt = sellImage.name.split('.').pop();
+    const fileName = `${user?.id}-${Date.now()}.${fileExt}`;
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('product-images')
+      .upload(fileName, sellImage, { upsert: true });
+
+    let imageUrl = "https://images.unsplash.com/photo-1523381210434-271e8be1f52b?auto=format&fit=crop&q=80";
+    if (!uploadError && uploadData) {
+      const { data: urlData } = supabase.storage
+        .from('product-images')
+        .getPublicUrl(uploadData.path);
+      imageUrl = urlData.publicUrl;
+    } else if (uploadError) {
+      console.error('Image upload error:', uploadError.message);
+      showToast("Image upload failed — listing with placeholder image.");
+    }
 
     const newProduct = {
       seller_id: user?.id || null,
@@ -309,15 +342,16 @@ export default function DashboardPage() {
       title: cleanTitle,
       price: `₹${cleanPrice}`,
       condition: sellCondition || "Good",
-      image_url: "https://images.unsplash.com/photo-1523381210434-271e8be1f52b?auto=format&fit=crop&q=80",
+      image_url: imageUrl,
       status: "In Stock"
     };
-    
+
     await supabase.from('products').insert([newProduct]);
-    
+
     setSellTitle("");
     setSellPrice("");
     setSellCondition("");
+    setSellImage(null);
     showToast("Item listed globally on the database successfully!");
     setActiveTab("browse");
   };
