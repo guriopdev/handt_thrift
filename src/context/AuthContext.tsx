@@ -77,22 +77,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email: supabaseUser.email,
     };
 
-    // Fetch profile from Postgres
-    const { data: dbProfile } = await supabase
+    // Try to fetch existing profile
+    const { data: dbProfile, error: profileSelectError } = await supabase
       .from('profiles')
       .select('*')
       .eq('id', baseUser.id)
       .single();
 
     if (dbProfile) {
+      // Profile exists – merge and set user
       setUser({ ...baseUser, ...dbProfile });
     } else {
-      const newProfile = {
-        name: supabaseUser.user_metadata?.full_name || supabaseUser.user_metadata?.name || "",
-        number: "",
-        location: ""
-      };
-      setUser({ ...baseUser, ...newProfile });
+      // No profile – create one (upsert with conflict on id)
+      const { error: profileUpsertError } = await supabase.from('profiles').upsert(
+        {
+          id: baseUser.id,
+          name: supabaseUser.user_metadata?.full_name || supabaseUser.user_metadata?.name || "",
+          number: "",
+          location: "",
+        },
+        { onConflict: 'id' }
+      );
+
+      if (profileUpsertError) {
+        console.error('Profile upsert error (login):', profileUpsertError);
+        // Fallback to minimal user object so UI works
+        setUser({ ...baseUser, name: "", number: "", location: "" });
+      } else {
+        // Fetch the freshly created profile to keep state consistent
+        const { data: freshProfile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', baseUser.id)
+          .single();
+        setUser({ ...baseUser, ...freshProfile });
+      }
     }
     setLoading(false);
   };
