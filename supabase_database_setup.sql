@@ -71,26 +71,83 @@ ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.offers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_favorites ENABLE ROW LEVEL SECURITY;
 
--- Give anyone read access to profiles & products for browsing
-CREATE POLICY "Public profiles are viewable by everyone." ON public.profiles FOR SELECT USING (true);
-CREATE POLICY "Public products are viewable by everyone." ON public.products FOR SELECT USING (true);
+-- ============================================================
+-- PROFILES
+-- ============================================================
+CREATE POLICY "Public profiles are viewable by everyone."
+  ON public.profiles FOR SELECT USING (true);
 
--- Users can own and manage their own records
-CREATE POLICY "Users can insert their own profile." ON public.profiles FOR INSERT WITH CHECK (auth.uid() = id);
-CREATE POLICY "Users can update own profile." ON public.profiles FOR UPDATE USING (auth.uid() = id);
+CREATE POLICY "Users can insert their own profile."
+  ON public.profiles FOR INSERT WITH CHECK (auth.uid() = id);
 
-CREATE POLICY "Sellers can manage their own products." ON public.products FOR ALL USING (auth.uid() = seller_id);
+CREATE POLICY "Users can update own profile."
+  ON public.profiles FOR UPDATE USING (auth.uid() = id);
 
--- Restrict chats strictly to the buyer and seller involved
-CREATE POLICY "Users can view their chats." ON public.chats FOR SELECT USING (auth.uid() = buyer_id OR auth.uid() = seller_id);
-CREATE POLICY "Users can create chats." ON public.chats FOR INSERT WITH CHECK (auth.uid() = buyer_id);
+-- ============================================================
+-- PRODUCTS
+-- Anyone can browse, only the seller can insert/update/delete
+-- NOTE: Do NOT use FOR ALL — it overrides the public SELECT policy
+-- ============================================================
+CREATE POLICY "Public products are viewable by everyone."
+  ON public.products FOR SELECT USING (true);
 
-CREATE POLICY "Users can interact with their messages." ON public.messages FOR ALL USING (
-  EXISTS (
-    SELECT 1 FROM public.chats 
-    WHERE public.chats.id = public.messages.chat_id 
-    AND (public.chats.buyer_id = auth.uid() OR public.chats.seller_id = auth.uid())
-  )
-);
+CREATE POLICY "Sellers can insert their own products."
+  ON public.products FOR INSERT WITH CHECK (auth.uid() = seller_id);
 
-CREATE POLICY "Users manage their own cart and wishlists" ON public.user_favorites FOR ALL USING (auth.uid() = user_id);
+CREATE POLICY "Sellers can update their own products."
+  ON public.products FOR UPDATE USING (auth.uid() = seller_id);
+
+CREATE POLICY "Sellers can delete their own products."
+  ON public.products FOR DELETE USING (auth.uid() = seller_id);
+
+-- ============================================================
+-- OFFERS
+-- Buyers create offers, sellers see offers on their products,
+-- buyers can see their own offers
+-- ============================================================
+CREATE POLICY "Offers are viewable by seller and buyer."
+  ON public.offers FOR SELECT USING (
+    auth.uid() = buyer_id
+    OR EXISTS (
+      SELECT 1 FROM public.products
+      WHERE public.products.id = public.offers.product_id
+        AND public.products.seller_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Buyers can create offers."
+  ON public.offers FOR INSERT WITH CHECK (auth.uid() = buyer_id);
+
+CREATE POLICY "Sellers can update offer status."
+  ON public.offers FOR UPDATE USING (
+    EXISTS (
+      SELECT 1 FROM public.products
+      WHERE public.products.id = public.offers.product_id
+        AND public.products.seller_id = auth.uid()
+    )
+  );
+
+-- ============================================================
+-- CHATS & MESSAGES
+-- ============================================================
+CREATE POLICY "Users can view their chats."
+  ON public.chats FOR SELECT USING (auth.uid() = buyer_id OR auth.uid() = seller_id);
+
+CREATE POLICY "Users can create chats."
+  ON public.chats FOR INSERT WITH CHECK (auth.uid() = buyer_id);
+
+CREATE POLICY "Users can interact with their messages."
+  ON public.messages FOR ALL USING (
+    EXISTS (
+      SELECT 1 FROM public.chats
+      WHERE public.chats.id = public.messages.chat_id
+        AND (public.chats.buyer_id = auth.uid() OR public.chats.seller_id = auth.uid())
+    )
+  );
+
+-- ============================================================
+-- USER FAVORITES (Cart / Wishlist)
+-- ============================================================
+CREATE POLICY "Users manage their own cart and wishlists"
+  ON public.user_favorites FOR ALL USING (auth.uid() = user_id);
+
