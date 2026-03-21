@@ -11,6 +11,7 @@ import {
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { createClient } from "@/utils/supabase/client";
 
 // Dummy data types
 type Product = {
@@ -101,6 +102,28 @@ export default function DashboardPage() {
   const [negotiatedPrice, setNegotiatedPrice] = useState("");
   const [meetupLocation, setMeetupLocation] = useState("");
 
+  const supabase = createClient();
+
+  const fetchGlobalData = async () => {
+    // 1. Fetch Global Products
+    const { data: pData } = await supabase.from('products').select('*').order('created_at', { ascending: false });
+    if (pData && pData.length > 0) {
+      setProducts(pData.map((p: any) => ({
+        id: p.id, title: p.title, price: p.price, condition: p.condition,
+        image: p.image_url, sellerId: p.seller_id, sellerName: p.seller_name, status: p.status
+      })));
+    }
+    
+    // 2. Fetch Global Offers
+    const { data: oData } = await supabase.from('offers').select('*').order('created_at', { ascending: false });
+    if (oData) {
+      setPendingOffers(oData.map((o: any) => ({
+        id: o.id, productId: o.product_id, buyerName: o.buyer_name,
+        negotiatedPrice: o.negotiated_price, place: o.meetup_location, status: o.status
+      })));
+    }
+  };
+
   useEffect(() => {
     if (loading) return;
     
@@ -114,6 +137,17 @@ export default function DashboardPage() {
       } else {
         setActiveTab("profile");
       }
+
+      fetchGlobalData();
+
+      // Realtime Multi-Channel Event Subscriptions
+      const channels = supabase.channel('custom-all-channel')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => { fetchGlobalData(); })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'offers' }, () => { fetchGlobalData(); })
+        .subscribe();
+
+      return () => { supabase.removeChannel(channels); };
+
     } else {
       router.push("/login");
     }
@@ -221,34 +255,37 @@ export default function DashboardPage() {
     }
   };
 
-  const handleApproveOffer = (offer: Offer) => {
-    setProducts(products.map(p => p.id === offer.productId ? { ...p, status: "Sold" } : p));
-    setPendingOffers(pendingOffers.map(o => o.id === offer.id ? { ...o, status: "approved" } : o));
+  const handleApproveOffer = async (offer: Offer) => {
+    await supabase.from('products').update({ status: 'Sold' }).eq('id', offer.productId);
+    await supabase.from('offers').update({ status: 'approved' }).eq('id', offer.id);
     showToast("Deal Approved! Item is now marked as Sold.");
   };
 
-  const handleRejectOffer = (offer: Offer) => {
-    setProducts(products.map(p => p.id === offer.productId ? { ...p, status: "In Stock" } : p));
-    setPendingOffers(pendingOffers.map(o => o.id === offer.id ? { ...o, status: "rejected" } : o));
+  const handleRejectOffer = async (offer: Offer) => {
+    await supabase.from('products').update({ status: 'In Stock' }).eq('id', offer.productId);
+    await supabase.from('offers').update({ status: 'rejected' }).eq('id', offer.id);
     showToast("Offer rejected. Item is back in stock.");
   };
 
-  const handleSendDeal = () => {
+  const handleSendDeal = async () => {
     if (!negotiatedPrice || !meetupLocation) {
       showToast("Please provide the negotiated price and meetup location.");
       return;
     }
-    const newOffers: Offer[] = cart.map(productId => ({
-      id: Date.now() + Math.random(),
-      productId,
-      buyerName: name || "Anonymous Buyer",
-      negotiatedPrice,
-      place: meetupLocation,
+    const newOffers = cart.map(productId => ({
+      product_id: productId,
+      buyer_id: user?.id,
+      buyer_name: name || "Anonymous Buyer",
+      negotiated_price: negotiatedPrice,
+      meetup_location: meetupLocation,
       status: "pending"
     }));
 
-    setPendingOffers([...pendingOffers, ...newOffers]);
-    setProducts(products.map(p => cart.includes(p.id) ? { ...p, status: "Currently in Deal" } : p));
+    await supabase.from('offers').insert(newOffers);
+    for (const pid of cart) {
+      await supabase.from('products').update({ status: 'Currently in Deal' }).eq('id', pid);
+    }
+    
     setCart([]);
     setNegotiatedPrice("");
     setMeetupLocation("");
@@ -256,7 +293,7 @@ export default function DashboardPage() {
     setActiveTab("chat");
   };
 
-  const handleSellSubmit = (e: React.FormEvent) => {
+  const handleSellSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!sellImage) {
       showToast("Please upload an image for your listing.");
@@ -266,21 +303,22 @@ export default function DashboardPage() {
     const cleanTitle = sellTitle.trim().slice(0, 60);
     const cleanPrice = Math.abs(parseInt(sellPrice) || 0).toString().slice(0, 7);
 
-    const newProduct: Product = {
-      id: Date.now(),
+    const newProduct = {
+      seller_id: user?.id || null,
+      seller_name: user?.name || "Anonymous",
       title: cleanTitle,
       price: `₹${cleanPrice}`,
       condition: sellCondition || "Good",
-      image: sellImage ? URL.createObjectURL(sellImage) : "https://images.unsplash.com/photo-1523381210434-271e8be1f52b?auto=format&fit=crop&q=80",
-      sellerId: user?.id || "me",
-      sellerName: user?.name || "Me",
+      image_url: "https://images.unsplash.com/photo-1523381210434-271e8be1f52b?auto=format&fit=crop&q=80",
       status: "In Stock"
     };
-    setProducts([newProduct, ...products]);
+    
+    await supabase.from('products').insert([newProduct]);
+    
     setSellTitle("");
     setSellPrice("");
     setSellCondition("");
-    showToast("Item listed successfully!");
+    showToast("Item listed globally on the database successfully!");
     setActiveTab("browse");
   };
 

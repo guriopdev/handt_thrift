@@ -16,7 +16,7 @@ interface AuthContextType {
   user: User | null;
   loginWithGoogle: () => void;
   logout: () => void;
-  updateProfile: (data: Partial<User>) => void;
+  updateProfile: (data: Partial<User>) => Promise<void>;
   loading: boolean;
 }
 
@@ -57,30 +57,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const handleUserSession = (supabaseUser: any) => {
+  const handleUserSession = async (supabaseUser: any) => {
     // 1. Core user from Supabase
     const baseUser = {
       id: supabaseUser.id,
       email: supabaseUser.email,
     };
 
-    // 2. Hydrate local profile state (Since we don't have a Postgres tables migrations yet, we combine local DB mapping)
-    // NOTE: For real production, this would do: supabase.from('users').select('*').eq('id', user.id)
-    const storedLocalProfile = localStorage.getItem(`profile_${baseUser.id}`);
+    // 2. Fetch authenticated profile directly from Postgres
+    const { data: dbProfile } = await supabase.from('profiles').select('*').eq('id', baseUser.id).single();
     
-    if (storedLocalProfile) {
-      setUser({ ...baseUser, ...JSON.parse(storedLocalProfile) });
+    if (dbProfile) {
+      setUser({ ...baseUser, ...dbProfile });
     } else {
-      // Create fresh profile with info extracted from Google if available
+      // 3. Draft fresh profile structure if not yet initialized in database
       const newProfile = {
         name: supabaseUser.user_metadata?.full_name || supabaseUser.user_metadata?.name || "",
         number: "",
         location: ""
       };
-      
       setUser({ ...baseUser, ...newProfile });
-      
-      // If we are on the callback page, wait a frame, but mostly we let Browse route push them to dashboard if name missing
     }
     setLoading(false);
   };
@@ -102,18 +98,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     router.push("/");
   };
 
-  const updateProfile = (data: Partial<User>) => {
+  const updateProfile = async (data: Partial<User>) => {
     if (!user) return;
     const updated = { ...user, ...data };
-    setUser(updated);
     
-    // Save to browser for this specific DB user ID
-    localStorage.setItem(`profile_${user.id}`, JSON.stringify({
+    // Save to authentic Postgres DB securely using Row Level Security overrides gracefully
+    await supabase.from('profiles').upsert({
+      id: user.id,
       name: updated.name,
       number: updated.number,
-      location: updated.location
-    }));
-
+      location: updated.location,
+    });
+    
+    setUser(updated);
     router.push("/dashboard");
   };
 
