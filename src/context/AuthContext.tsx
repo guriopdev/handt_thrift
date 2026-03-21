@@ -121,12 +121,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const supabase = getSupabase();
     const updated = { ...user, ...data };
 
-    await supabase.from('profiles').upsert({
+    const { error } = await supabase.from('profiles').upsert({
       id: user.id,
       name: updated.name,
       number: updated.number,
       location: updated.location,
-    });
+    }, { onConflict: 'id' });
+
+    if (error) {
+      console.error('Profile save error:', error);
+      // Still update local state so UI doesn't break
+    }
 
     setUser(updated);
     router.push("/dashboard");

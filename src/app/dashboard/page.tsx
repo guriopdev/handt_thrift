@@ -314,11 +314,26 @@ export default function DashboardPage() {
       return;
     }
 
-    showToast("Uploading image...");
+    showToast("Saving listing...");
     const cleanTitle = sellTitle.trim().slice(0, 60);
     const cleanPrice = Math.abs(parseInt(sellPrice) || 0).toString().slice(0, 7);
 
-    // Upload actual image to Supabase Storage
+    // Step 1: Ensure the seller's profile row exists in DB (required by FK constraint)
+    // Without this, the products insert fails silently if profile was never saved
+    const { error: profileError } = await supabase.from('profiles').upsert({
+      id: user!.id,
+      name: user?.name || "Anonymous",
+      number: user?.number || "N/A",
+      location: user?.location || "NIT Hamirpur, HP",
+    }, { onConflict: 'id' });
+
+    if (profileError) {
+      console.error('Profile upsert error:', profileError);
+      showToast(`Error saving profile: ${profileError.message}`);
+      return;
+    }
+
+    // Step 2: Upload image to Supabase Storage
     const fileExt = sellImage.name.split('.').pop();
     const fileName = `${user?.id}-${Date.now()}.${fileExt}`;
     const { data: uploadData, error: uploadError } = await supabase.storage
@@ -333,26 +348,34 @@ export default function DashboardPage() {
       imageUrl = urlData.publicUrl;
     } else if (uploadError) {
       console.error('Image upload error:', uploadError.message);
-      showToast("Image upload failed — listing with placeholder image.");
+      // Continue with placeholder — don't block listing
     }
 
-    const newProduct = {
-      seller_id: user?.id || null,
+    // Step 3: Insert product — CHECK the error this time!
+    const { error: insertError } = await supabase.from('products').insert([{
+      seller_id: user!.id,
       seller_name: user?.name || "Anonymous",
       title: cleanTitle,
       price: `₹${cleanPrice}`,
       condition: sellCondition || "Good",
       image_url: imageUrl,
       status: "In Stock"
-    };
+    }]);
 
-    await supabase.from('products').insert([newProduct]);
+    if (insertError) {
+      // Show the REAL error so we can debug it
+      console.error('Product insert error:', insertError);
+      showToast(`Failed to list item: ${insertError.message}`);
+      return;
+    }
 
+    // Success — clear form and refresh
     setSellTitle("");
     setSellPrice("");
     setSellCondition("");
     setSellImage(null);
-    showToast("Item listed globally on the database successfully!");
+    showToast("Item listed! Visible to all users now.");
+    await fetchGlobalData(); // immediately refresh browse list
     setActiveTab("browse");
   };
 
