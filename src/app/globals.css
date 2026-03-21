@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-beige: #F2EAE0;
+  --color-blue: #B4D3D9;
+  --color-lavender: #BDA6CE;
+  --color-purple: #9B8EC7;
+  
+  --font-sans: var(--font-inter);
+}
+
+:root {
+  --background: #F2EAE0;
+  --foreground: #171717;
+}
+
+body {
+  background-color: var(--color-beige);
+  color: var(--foreground);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  margin: 0;
+  padding: 0;
+}
+
+/* Micro-animations and utility classes */
+.btn {
+  @apply rounded-[24px] px-6 py-3 font-semibold transition-all duration-200 ease-in-out cursor-pointer;
+}
+
+.btn-primary {
+  @apply bg-purple text-white hover:-translate-y-1 hover:shadow-lg hover:bg-lavender;
+}
+
+.btn-secondary {
+  @apply bg-blue text-foreground hover:-translate-y-1 hover:shadow-md hover:opacity-90;
+}
+
+.card {
+  @apply bg-white rounded-2xl p-6 shadow-sm transition-all duration-300 ease-in-out hover:-translate-y-2 hover:shadow-xl border border-transparent hover:border-blue/30;
+}
+
+.fade-in {
+  animation: fadeIn 0.8s ease-out forwards;
+  opacity: 0;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: var(--color-purple);
+  border-radius: 20px;
+  opacity: 0.5;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-lavender);
+}
+
+/* Marquee Animation */
+@keyframes marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.animate-marquee {
+  display: flex;
+  white-space: nowrap;
+  animation: marquee 25s linear infinite;
+  will-change: transform;
+}
+.animate-marquee:hover {
+  animation-play-state: paused;
+}
