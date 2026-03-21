@@ -107,13 +107,19 @@ export default function DashboardPage() {
 
   const fetchGlobalData = async () => {
     const supabase = getSupabase();
-    // 1. Fetch ALL products from Supabase (always overwrite local state)
+
+    // 1. Fetch ALL products from Supabase
     const { data: pData, error: pError } = await supabase
       .from('products')
       .select('*')
       .order('created_at', { ascending: false });
-    if (!pError) {
-      // Always set — even empty array clears stale dummy data
+
+    if (pError) {
+      // Surface the REAL error so we can debug it
+      console.error('fetchGlobalData products error:', pError);
+      showToast(`Browse error: ${pError.message}`);
+    } else {
+      // Always overwrite — even empty array clears stale data
       setProducts((pData ?? []).map((p: any) => ({
         id: p.id, title: p.title, price: p.price, condition: p.condition,
         image: p.image_url, sellerId: p.seller_id, sellerName: p.seller_name, status: p.status
@@ -121,11 +127,14 @@ export default function DashboardPage() {
     }
 
     // 2. Fetch Global Offers
-    const { data: oData } = await supabase
+    const { data: oData, error: oError } = await supabase
       .from('offers')
       .select('*')
       .order('created_at', { ascending: false });
-    if (oData) {
+
+    if (oError) {
+      console.error('fetchGlobalData offers error:', oError);
+    } else if (oData) {
       setPendingOffers(oData.map((o: any) => ({
         id: o.id, productId: o.product_id, buyerName: o.buyer_name,
         negotiatedPrice: o.negotiated_price, place: o.meetup_location, status: o.status
