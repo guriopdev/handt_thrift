@@ -841,7 +841,8 @@ export default function DashboardPage() {
                     
                     <div className="mt-auto grid grid-cols-2 gap-2">
                       <button 
-                        onClick={() => {
+                        onClick={(e) => {
+                          e.stopPropagation();
                           if (!product.sellerId) {
                             showToast("Cannot chat: This item belongs to an invalid or deleted user account.");
                             return;
@@ -853,8 +854,11 @@ export default function DashboardPage() {
                         <MessageSquare size={16} /> Chat
                       </button>
                       <button 
-                        onClick={() => toggleCart(product.id)}
-                        className={`flex items-center justify-center gap-2 py-2 px-3 font-bold rounded-xl transition-colors text-sm ${cart.includes(product.id) ? 'bg-purple text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleCart(product.id);
+                        }}
+                        className={`flex items-center justify-center gap-2 py-2 px-3 font-bold rounded-xl transition-colors text-sm ${cart.includes(product.id) ? 'bg-purple text-white shadow-md' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
                       >
                         <ShoppingBag size={16} /> {cart.includes(product.id) ? 'In Cart' : 'Add'}
                       </button>
@@ -887,8 +891,9 @@ export default function DashboardPage() {
                         className={`p-3 rounded-2xl cursor-pointer flex gap-3 items-center transition-colors relative ${activeChatId === chat.id ? 'bg-white shadow-sm border border-purple/20' : 'hover:bg-gray-100 border border-transparent'}`}
                       >
                         {hasUnread && <div className="absolute top-3 right-3 w-3 h-3 bg-red-500 rounded-full border-2 border-white animate-pulse" />}
-                        <div className="w-12 h-12 rounded-xl border border-gray-200 overflow-hidden relative flex-shrink-0">
-                          {product && <Image src={product.image} alt="item" fill className="object-cover" />}
+                        <div className={`w-12 h-12 rounded-[1rem] flex items-center justify-center text-white font-black text-lg shadow-sm flex-shrink-0
+                          ${activeChatId === chat.id ? 'bg-purple' : 'bg-gradient-to-tr from-lavender to-purple/60'}`}>
+                          {(chat.otherUserName || "U").charAt(0).toUpperCase()}
                         </div>
                         <div className="min-w-0">
                           <h4 className="text-sm font-bold text-gray-900 truncate">{chat.otherUserName || chat.otherUser}</h4>
