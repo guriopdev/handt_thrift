@@ -38,6 +38,7 @@ type Chat = {
   id: number;
   productId: number;
   otherUser: string;
+  otherUserName?: string;
   messages: ChatMessage[];
   dealApproved: { me: boolean; other: boolean };
 };
@@ -45,6 +46,7 @@ type Chat = {
 type Offer = {
   id: number;
   productId: number;
+  buyerId?: string;
   buyerName: string;
   negotiatedPrice: string;
   place: string;
@@ -103,8 +105,8 @@ export default function DashboardPage() {
   };
   // ===============================
 
-  const [negotiatedPrice, setNegotiatedPrice] = useState("");
-  const [meetupLocation, setMeetupLocation] = useState("");
+  const [negotiatedPrices, setNegotiatedPrices] = useState<Record<number, string>>({});
+  const [meetupLocations, setMeetupLocations] = useState<Record<number, string>>({});
 
   // Lazily create Supabase client — only in the browser, never during SSR prerendering
   const supabaseRef = useRef<ReturnType<typeof createClient> | null>(null);
@@ -115,6 +117,10 @@ export default function DashboardPage() {
 
   const fetchGlobalData = async () => {
     const supabase = getSupabase();
+
+    // 0. Fetch Profiles map
+    const { data: profilesData } = await supabase.from('profiles').select('id, name');
+    const profilesMap = new Map(profilesData?.map((p: any) => [p.id, p.name]) || []);
 
     // 1. Fetch ALL products from Supabase
     logDebug(`Fetching products...`);
@@ -145,7 +151,7 @@ export default function DashboardPage() {
       console.error('fetchGlobalData offers error:', oError);
     } else if (oData) {
       setPendingOffers(oData.map((o: any) => ({
-        id: o.id, productId: o.product_id, buyerName: o.buyer_name,
+        id: o.id, productId: o.product_id, buyerId: o.buyer_id, buyerName: o.buyer_name,
         negotiatedPrice: o.negotiated_price, place: o.meetup_location, status: o.status
       })));
     }
@@ -166,10 +172,12 @@ export default function DashboardPage() {
         const formattedChats: Chat[] = cData.map((c: any) => {
           const isBuyer = c.buyer_id === user.id;
           const otherUserId = isBuyer ? c.seller_id : c.buyer_id;
+          const otherUserName = profilesMap.get(otherUserId) || "Unknown User";
           return {
             id: c.id,
             productId: c.product_id,
             otherUser: otherUserId,
+            otherUserName,
             messages: (c.messages || [])
               .sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
               .map((m: any) => ({
@@ -336,31 +344,33 @@ export default function DashboardPage() {
     await fetchGlobalData();
   };
 
-  const handleSendDeal = async () => {
+  const handleSendDeal = async (productId: number) => {
     const supabase = getSupabase();
-    if (!negotiatedPrice || !meetupLocation) {
-      showToast("Please provide the negotiated price and meetup location.");
+    const np = negotiatedPrices[productId];
+    const ml = meetupLocations[productId];
+    if (!np || !ml) {
+      showToast("Please provide the negotiated price and meetup location for this item.");
       return;
     }
-    const newOffers = cart.map(productId => ({
+    
+    await supabase.from('offers').insert([{
       product_id: productId,
       buyer_id: user?.id,
       buyer_name: name || "Anonymous Buyer",
-      negotiated_price: negotiatedPrice,
-      meetup_location: meetupLocation,
+      negotiated_price: np,
+      meetup_location: ml,
       status: "pending"
-    }));
+    }]);
 
-    await supabase.from('offers').insert(newOffers);
-    for (const pid of cart) {
-      await supabase.from('products').update({ status: 'Currently in Deal' }).eq('id', pid);
-    }
+    await supabase.from('products').update({ status: 'Currently in Deal' }).eq('id', productId);
     
-    setCart([]);
-    setNegotiatedPrice("");
-    setMeetupLocation("");
+    setCart(cart.filter(id => id !== productId));
+    setNegotiatedPrices(prev => { const n = {...prev}; delete n[productId]; return n; });
+    setMeetupLocations(prev => { const n = {...prev}; delete n[productId]; return n; });
+    
     showToast("Deal sent to seller for approval! They will contact you in Chat.");
     setActiveTab("chat");
+    await fetchGlobalData();
   };
 
   const handleSellSubmit = async (e: React.FormEvent) => {
@@ -602,6 +612,65 @@ export default function DashboardPage() {
                       <p className="text-[11px] text-gray-500 font-medium text-center mt-1 max-w-[80px] leading-tight">{step.desc}</p>
                     </div>
                   ))}
+                </div>
+              </div>
+
+              {/* Transaction History */}
+              <div className="bg-white p-8 mt-6 rounded-[2.5rem] shadow-sm border border-purple/10">
+                <h3 className="text-xl font-black text-gray-900 tracking-tighter mb-6 uppercase tracking-widest text-purple">Transaction History</h3>
+                
+                <div className="space-y-6">
+                  {/* Items Bought */}
+                  <div>
+                    <h4 className="font-bold text-gray-900 mb-3 flex items-center gap-2"><ShoppingBag size={18} className="text-green-500" /> Items Bought</h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {products.filter(p => pendingOffers.some(o => o.productId === p.id && o.status === 'approved' && o.buyerId === user.id)).map(product => {
+                        const offer = pendingOffers.find(o => o.productId === product.id && o.status === 'approved' && o.buyerId === user.id);
+                        return (
+                          <div key={`bought-${product.id}`} className="flex gap-4 p-3 rounded-2xl border border-green-100 bg-green-50 shadow-sm relative group overflow-hidden transition-all hover:bg-green-100/50">
+                            <div className="w-16 h-16 rounded-xl overflow-hidden relative bg-gray-200 shrink-0">
+                               <Image src={product.image} alt={product.title} fill className="object-cover" />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                               <h5 className="font-bold text-gray-900 truncate">{product.title}</h5>
+                               <p className="text-xs text-gray-600 font-medium">Bought for ₹{offer?.negotiatedPrice}</p>
+                               <span className="text-[10px] uppercase tracking-wider font-bold text-green-700 bg-green-200/80 px-2 py-0.5 rounded flex items-center w-max mt-1.5"><CheckCircle2 size={10} className="mr-1"/> Purchased</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {products.filter(p => pendingOffers.some(o => o.productId === p.id && o.status === 'approved' && o.buyerId === user.id)).length === 0 && (
+                        <p className="text-sm text-gray-500 italic bg-gray-50 p-4 rounded-xl border border-gray-100">You haven't purchased anything yet.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="h-px bg-gray-100 w-full my-4"></div>
+
+                  {/* Items Sold */}
+                  <div>
+                    <h4 className="font-bold text-gray-900 mb-3 flex items-center gap-2"><Banknote size={18} className="text-orange-500" /> Items Sold</h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {products.filter(p => p.sellerId === user.id && p.status === 'Sold').map(product => {
+                        const offer = pendingOffers.find(o => o.productId === product.id && o.status === 'approved');
+                        return (
+                          <div key={`sold-${product.id}`} className="flex gap-4 p-3 rounded-2xl border border-orange-100 bg-orange-50 shadow-sm relative group overflow-hidden transition-all hover:bg-orange-100/50">
+                            <div className="w-16 h-16 rounded-xl overflow-hidden relative bg-gray-200 shrink-0">
+                               <Image src={product.image} alt={product.title} fill className="object-cover" />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                               <h5 className="font-bold text-gray-900 truncate">{product.title}</h5>
+                               <p className="text-xs text-gray-600 font-medium">Sold for ₹{offer?.negotiatedPrice || 'Unknown'}</p>
+                               <span className="text-[10px] uppercase tracking-wider font-bold text-orange-700 bg-orange-200/80 px-2 py-0.5 rounded flex items-center w-max mt-1.5"><Banknote size={10} className="mr-1"/> Sold out</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {products.filter(p => p.sellerId === user.id && p.status === 'Sold').length === 0 && (
+                        <p className="text-sm text-gray-500 italic bg-gray-50 p-4 rounded-xl border border-gray-100">You haven't listed & sold any items yet.</p>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1021,59 +1090,49 @@ export default function DashboardPage() {
                 <div className="text-center py-10 text-gray-500">Your cart is empty. Ensure you add items before making a final payment plan!</div>
               ) : (
                 <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-gray-100 space-y-6">
+                  <h3 className="font-bold text-gray-900 mb-4 text-2xl tracking-tight">Items to Finalize</h3>
                   
-                  {/* Cart Summary */}
-                  <div className="bg-gray-50 p-6 rounded-2xl">
-                    <h3 className="font-bold text-gray-900 mb-4">Items to Finalize</h3>
-                    {cart.map(id => {
-                      const product = products.find(p => p.id === id);
-                      return product ? (
-                        <div key={id} className="flex justify-between items-center mb-2 last:mb-0">
-                          <span className="text-gray-600">{product.title}</span>
-                          <span className="font-bold text-purple">{product.price}</span>
+                  {cart.map(id => {
+                    const product = products.find(p => p.id === id);
+                    if (!product) return null;
+                    return (
+                      <div key={id} className="bg-gray-50 border border-gray-100 p-6 rounded-2xl mb-6 shadow-sm">
+                        <div className="flex justify-between items-center mb-5 border-b border-gray-200 pb-4">
+                          <span className="text-gray-900 font-bold">{product.title}</span>
+                          <span className="font-extrabold text-purple text-lg">{product.price}</span>
                         </div>
-                      ) : null;
-                    })}
-                  </div>
-
-                  {/* Negotiation Section */}
-                  <div>
-                    <label className="block text-sm font-bold leading-6 text-gray-900">Price Counter Meter (Negotiate)</label>
-                    <p className="text-xs text-gray-500 mb-2">Propose your counter-price. The seller must approve it.</p>
-                    <div className="mt-2 relative">
-                      <input type="number" 
-                        value={negotiatedPrice}
-                        onChange={(e) => setNegotiatedPrice(e.target.value)}
-                        className="block w-full rounded-2xl border-0 py-3 px-4 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-inset focus:ring-purple sm:text-sm sm:leading-6"
-                        placeholder="e.g. 700" />
-                    </div>
-                  </div>
-
-                  {/* Future Booking Amount Note */}
+                        
+                        <div className="space-y-4">
+                          <div>
+                            <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">Price Counter Meter</label>
+                            <input type="number" 
+                              value={negotiatedPrices[id] || ""}
+                              onChange={(e) => setNegotiatedPrices({...negotiatedPrices, [id]: e.target.value})}
+                              className="block w-full rounded-xl border-0 py-2.5 px-4 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-200 focus:ring-2 focus:ring-inset focus:ring-purple sm:text-sm"
+                              placeholder="e.g. 700" />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">Meetup Location</label>
+                            <input type="text" 
+                              value={meetupLocations[id] || ""}
+                              onChange={(e) => setMeetupLocations({...meetupLocations, [id]: e.target.value})}
+                              className="block w-full rounded-xl border-0 py-2.5 px-4 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-200 focus:ring-2 focus:ring-inset focus:ring-purple sm:text-sm"
+                              placeholder="e.g. Campus Gate at 5 PM" />
+                          </div>
+                          <button onClick={() => handleSendDeal(id)} className="w-full btn btn-primary py-3 mt-2 text-sm font-bold !rounded-xl shadow-md cursor-pointer hover:shadow-lg transition-all">
+                            Send Deal for {product.title}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  
                   <div className="bg-blue/10 border border-blue/20 p-4 rounded-2xl flex items-start gap-4">
                      <CheckCircle2 className="text-blue mt-1 shrink-0" size={20} />
                      <div>
                        <h4 className="font-bold text-blue">5% Booking Amount (Coming Soon)</h4>
                        <p className="text-sm text-gray-600 mt-1">In future updates, a 5% advance booking amount of the final price will be required securely online before the deal is completely approved by the seller.</p>
                      </div>
-                  </div>
-
-                  {/* Meetup Logistics */}
-                  <div>
-                    <label className="block text-sm font-bold leading-6 text-gray-900">Where to Meet? (One-to-One)</label>
-                    <textarea 
-                      rows={3}
-                      value={meetupLocation}
-                      onChange={(e) => setMeetupLocation(e.target.value)}
-                      className="mt-2 block w-full rounded-2xl border-0 py-3 px-4 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-inset focus:ring-purple sm:text-sm sm:leading-6 custom-scrollbar"
-                      placeholder="e.g. NIT Hamirpur Main Gate at 5 PM. I will pay in cash."
-                    ></textarea>
-                  </div>
-
-                  <div className="pt-4">
-                    <button onClick={handleSendDeal} className="w-full btn btn-primary py-4 text-lg !rounded-full shadow-lg shadow-purple/20">
-                      Send Deal for Approval
-                    </button>
                   </div>
                 </div>
               )}
