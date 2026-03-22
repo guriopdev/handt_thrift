@@ -156,7 +156,7 @@ export default function DashboardPage() {
         .from('chats')
         .select(`
           id, product_id, buyer_id, seller_id, created_at,
-          messages ( id, text, sender_id, is_read, created_at )
+          messages ( id, text, sender_id, status, created_at )
         `)
         .or(`buyer_id.eq.${user.id},seller_id.eq.${user.id}`);
 
@@ -176,7 +176,7 @@ export default function DashboardPage() {
                 id: m.id,
                 text: m.text,
                 sender: m.sender_id === user.id ? "me" : "other",
-                status: m.is_read ? "read" : "sent"
+                status: m.status
               })),
             dealApproved: { me: false, other: false }
           };
@@ -654,7 +654,13 @@ export default function DashboardPage() {
                     
                     <div className="mt-auto grid grid-cols-2 gap-2">
                       <button 
-                        onClick={() => startChat(product.id, "Seller " + product.id)}
+                        onClick={() => {
+                          if (!product.sellerId) {
+                            showToast("Cannot chat: This item belongs to an invalid or deleted user account.");
+                            return;
+                          }
+                          startChat(product.id, product.sellerId);
+                        }}
                         className="flex items-center justify-center gap-2 py-2 px-3 bg-lavender/30 text-purple font-bold rounded-xl hover:bg-lavender/50 transition-colors text-sm"
                       >
                         <MessageSquare size={16} /> Chat
