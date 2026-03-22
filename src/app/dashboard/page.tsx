@@ -19,7 +19,10 @@ type Product = {
   title: string;
   price: string;
   condition: string;
-  image: string;
+  image: string; // Keep for backward compatibility/preview
+  images: string[];
+  description: string;
+  tags: string[];
   sellerId: string;
   sellerName: string;
   status: "In Stock" | "Currently in Deal" | "Sold";
@@ -94,7 +97,9 @@ export default function DashboardPage() {
   const [sellTitle, setSellTitle] = useState("");
   const [sellPrice, setSellPrice] = useState("");
   const [sellCondition, setSellCondition] = useState("");
-  const [sellImage, setSellImage] = useState<File | null>(null);
+  const [sellImages, setSellImages] = useState<File[]>([]);
+  const [sellDescription, setSellDescription] = useState("");
+  const [sellTags, setSellTags] = useState("");
 
   const [pendingOffers, setPendingOffers] = useState<Offer[]>([]);
   
@@ -128,7 +133,7 @@ export default function DashboardPage() {
     const { data: profilesData } = await supabase.from('profiles').select('id, name');
     const profilesMap = new Map(profilesData?.map((p: any) => [p.id, p.name]) || []);
 
-    // 1. Fetch ALL products from Supabase
+    // 1. Fetch ALL products
     logDebug(`Fetching products...`);
     const { data: pData, error: pError } = await supabase
       .from('products')
@@ -140,10 +145,13 @@ export default function DashboardPage() {
       showToast(`Browse error: ${pError.message}`);
     } else {
       logDebug(`SUCCESS: Fetched ${pData?.length || 0} products.`);
-      // Always overwrite — even empty array clears stale data
       setProducts((pData ?? []).map((p: any) => ({
         id: p.id, title: p.title, price: p.price, condition: p.condition,
-        image: p.image_url, sellerId: p.seller_id, sellerName: p.seller_name, status: p.status
+        image: p.image_url, 
+        images: p.image_urls || [p.image_url],
+        description: p.description || "",
+        tags: p.tags || [],
+        sellerId: p.seller_id, sellerName: p.seller_name, status: p.status
       })));
     }
 
@@ -207,19 +215,24 @@ export default function DashboardPage() {
         setChats(formattedChats);
         setUnreadMessagesCount(totalUnread);
       }
-    }
 
-    // Update other notification counts
-    if (user) {
-      // Pending offers for products I own
+      // Update notification counts
       const myProductIds = pData?.filter((p: any) => p.seller_id === user.id).map((p: any) => p.id) || [];
       const pendingCount = oData?.filter((o: any) => myProductIds.includes(o.product_id) && o.status === 'pending').length || 0;
       setPendingOffersCount(pendingCount);
 
-      // Approved deals where I am the buyer
       const approvedCount = oData?.filter((o: any) => o.buyer_id === user.id && o.status === 'approved').length || 0;
       setApprovedDealsCount(approvedCount);
     }
+  };
+
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+
+  const clearAllNotifications = () => {
+    setUnreadMessagesCount(0);
+    setPendingOffersCount(0);
+    setApprovedDealsCount(0);
+    showToast("Notifications cleared successfully!");
   };
 
   useEffect(() => {
@@ -238,7 +251,7 @@ export default function DashboardPage() {
 
       fetchGlobalData();
 
-      // Realtime Multi-Channel Event Subscriptions
+      // Realtime sub
       const supabase = getSupabase();
       const channels = supabase.channel('custom-all-channel')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => { fetchGlobalData(); })
@@ -406,14 +419,15 @@ export default function DashboardPage() {
   const handleSellSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const supabase = getSupabase();
-    if (!sellImage) {
-      showToast("Please upload an image for your listing.");
+    if (sellImages.length === 0) {
+      showToast("Please upload at least one image.");
       return;
     }
 
     showToast("Saving listing...");
     const cleanTitle = sellTitle.trim().slice(0, 60);
     const cleanPrice = Math.abs(parseInt(sellPrice) || 0).toString().slice(0, 7);
+    const cleanDescription = sellDescription.trim().slice(0, 500);
 
     // Step 1: Ensure the seller's profile row exists in DB (required by FK constraint)
     logDebug(`Step 1: Upserting profile for ${user!.id}...`);
@@ -429,55 +443,57 @@ export default function DashboardPage() {
       showToast(`Error saving profile: ${profileError.message}`);
       return;
     }
-    logDebug(`SUCCESS: Profile upserted.`);
+    logDebug(`SUCCESS: Profile upserted!`);
 
-    // Step 2: Upload image to Supabase Storage
-    logDebug(`Step 2: Uploading image...`);
-    const fileExt = sellImage.name.split('.').pop();
-    const fileName = `${user?.id}-${Date.now()}.${fileExt}`;
-    const { data: uploadData, error: uploadError } = await supabase.storage
-      .from('product-images')
-      .upload(fileName, sellImage, { upsert: true });
-
-    let imageUrl = "https://images.unsplash.com/photo-1523381210434-271e8be1f52b?auto=format&fit=crop&q=80";
-    if (!uploadError && uploadData) {
-      logDebug(`SUCCESS: Image uploaded.`);
-      const { data: urlData } = supabase.storage
+    // Step 2: Upload images to Supabase Storage
+    logDebug(`Step 2: Uploading images...`);
+    const uploadedUrls: string[] = [];
+    
+    for (const file of sellImages) {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${user?.id}-${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
+      const { data: uploadData, error: uploadError } = await supabase.storage
         .from('product-images')
-        .getPublicUrl(uploadData.path);
-      imageUrl = urlData.publicUrl;
-    } else if (uploadError) {
-      logDebug(`WARNING: Image upload failed: ${uploadError.message}. Using placeholder.`);
-      // Continue with placeholder — don't block listing
+        .upload(fileName, file, { upsert: true });
+
+      if (!uploadError && uploadData) {
+        const { data: urlData } = supabase.storage
+          .from('product-images')
+          .getPublicUrl(uploadData.path);
+        // Use the absolute URL including the domain for better compatibility
+        const publicUrl = urlData.publicUrl;
+        uploadedUrls.push(publicUrl);
+        logDebug(`SUCCESS: Image uploaded: ${publicUrl}`);
+      }
     }
 
-    // Step 3: Insert product — CHECK the error this time!
-    logDebug(`Step 3: Inserting product into database...`);
-    const { data: insertData, error: insertError } = await supabase.from('products').insert([{
+    const imageUrl = uploadedUrls[0] || "https://images.unsplash.com/photo-1523381210434-271e8be1f52b?auto=format&fit=crop&q=80";
+    logDebug(`Step 3: Inserting product with ${uploadedUrls.length} images...`);
+    
+    const { data: dbData, error: dbError } = await supabase.from('products').insert([{
       seller_id: user!.id,
-      seller_name: user?.name || "Anonymous",
+      seller_name: name || "Anonymous",
       title: cleanTitle,
       price: `₹${cleanPrice}`,
-      condition: sellCondition || "Good",
+      condition: sellCondition || "Used",
       image_url: imageUrl,
+      image_urls: uploadedUrls,
+      description: cleanDescription,
+      tags: sellTags.split(',').map(t => t.trim()).filter(t => t !== ""),
       status: "In Stock"
-    }]).select('*');
+    }]).select();
 
-    if (insertError) {
-      logDebug(`ERROR: Product insert failed: ${JSON.stringify(insertError)}`);
-      showToast(`Failed to list item: ${insertError.message}`);
-      return;
+    if (dbError) {
+      logDebug(`ERROR: Product insertion failed: ${JSON.stringify(dbError)}`);
+      showToast(`Error creating product: ${dbError.message}`);
+    } else {
+      logDebug(`SUCCESS: Product inserted. DB returned row: ${JSON.stringify(dbData)}`);
+      setSellTitle(""); setSellPrice(""); setSellCondition(""); setSellImages([]); 
+      setSellDescription(""); setSellTags("");
+      showToast("Item listed successfully for everyone to see!");
+      setActiveTab("browse");
+      await fetchGlobalData();
     }
-    logDebug(`SUCCESS: Product inserted. DB returned row: ${JSON.stringify(insertData)}`);
-
-    // Success — clear form and refresh
-    setSellTitle("");
-    setSellPrice("");
-    setSellCondition("");
-    setSellImage(null);
-    showToast("Item listed! Visible to all users now.");
-    await fetchGlobalData(); // immediately refresh browse list
-    setActiveTab("browse");
   };
 
   const toggleWishlist = (id: number) => {
@@ -663,8 +679,43 @@ export default function DashboardPage() {
                             </div>
                             <div className="min-w-0 flex-1">
                                <h5 className="font-bold text-gray-900 truncate">{product.title}</h5>
-                               <p className="text-xs text-gray-600 font-medium">Bought for ₹{offer?.negotiatedPrice}</p>
-                               <span className="text-[10px] uppercase tracking-wider font-bold text-green-700 bg-green-200/80 px-2 py-0.5 rounded flex items-center w-max mt-1.5"><CheckCircle2 size={10} className="mr-1"/> Purchased</span>
+                               <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">Item Description / Bio</label>
+                        <textarea 
+                          value={sellDescription}
+                          onChange={(e) => setSellDescription(e.target.value)}
+                          rows={3}
+                          className="block w-full rounded-xl border-0 py-2.5 px-4 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-200 focus:ring-2 focus:ring-inset focus:ring-purple sm:text-sm"
+                          placeholder="Tell us about the product..."></textarea>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">Tags (comma separated)</label>
+                        <input type="text" 
+                          value={sellTags}
+                          onChange={(e) => setSellTags(e.target.value)}
+                          className="block w-full rounded-xl border-0 py-2.5 px-4 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-200 focus:ring-2 focus:ring-inset focus:ring-purple sm:text-sm"
+                          placeholder="book, education, study" />
+                      </div>
+
+                      <div className="flex items-center justify-center w-full">
+                        <label className="flex flex-col items-center justify-center w-full h-40 border-2 border-gray-200 border-dashed rounded-[2rem] cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors relative overflow-hidden">
+                          <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                            <ImageIcon className="w-10 h-10 mb-3 text-gray-400" />
+                            <p className="mb-2 text-sm text-gray-500 font-bold">Upload Multiple Images</p>
+                            <p className="text-xs text-gray-400 font-medium">PNG, JPG or WebP</p>
+                            {sellImages.length > 0 && <p className="mt-2 text-purple font-black">{sellImages.length} files selected</p>}
+                          </div>
+                          <input 
+                            type="file" 
+                            className="hidden" 
+                            accept="image/*" 
+                            multiple
+                            onChange={(e) => {
+                              if (e.target.files) setSellImages(Array.from(e.target.files));
+                            }} />
+                        </label>
+                      </div>               <span className="text-[10px] uppercase tracking-wider font-bold text-green-700 bg-green-200/80 px-2 py-0.5 rounded flex items-center w-max mt-1.5"><CheckCircle2 size={10} className="mr-1"/> Purchased</span>
                             </div>
                           </div>
                         );
@@ -983,17 +1034,37 @@ export default function DashboardPage() {
                 </div>
 
                 <div>
-                   <label className="block text-sm font-bold leading-6 text-gray-900 mb-2">Upload Image <span className="text-red-500">*</span></label>
+                  <label className="block text-sm font-bold leading-6 text-gray-900 mb-2">Item Description / Bio</label>
+                  <textarea 
+                    value={sellDescription}
+                    onChange={(e) => setSellDescription(e.target.value)}
+                    rows={3}
+                    className="block w-full rounded-2xl border-0 py-3 px-4 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-200 focus:ring-2 focus:ring-purple sm:text-sm"
+                    placeholder="Tell us about your product..."></textarea>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-bold leading-6 text-gray-900 mb-2">Tags (comma separated)</label>
+                  <input type="text" 
+                    value={sellTags}
+                    onChange={(e) => setSellTags(e.target.value)}
+                    className="block w-full rounded-2xl border-0 py-3 px-4 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-200 focus:ring-2 focus:ring-purple sm:text-sm"
+                    placeholder="e.g. books, study, hamirpur" />
+                </div>
+
+                <div>
+                   <label className="block text-sm font-bold leading-6 text-gray-900 mb-2">Upload Images (One or More) <span className="text-red-500">*</span></label>
                    <div className="flex justify-center rounded-3xl border border-dashed border-gray-300 px-6 py-10 hover:bg-gray-50 transition-colors cursor-pointer relative overflow-hidden">
-                    <input type="file" required accept="image/*" className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onChange={(e) => e.target.files && setSellImage(e.target.files[0])} />
+                    <input type="file" required accept="image/*" multiple className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" 
+                      onChange={(e) => e.target.files && setSellImages(Array.from(e.target.files))} />
                     <div className="text-center w-full z-10 pointer-events-none">
-                      {sellImage ? (
-                        <p className="text-sm font-bold text-purple truncate">{sellImage.name}</p>
+                      {sellImages.length > 0 ? (
+                        <p className="text-sm font-bold text-purple truncate">{sellImages.length} images selected</p>
                       ) : (
                         <>
                           <ImageIcon className="mx-auto h-12 w-12 text-gray-300 pointer-events-none" aria-hidden="true" />
                           <div className="mt-4 flex text-sm justify-center leading-6 text-gray-600 pointer-events-none">
-                            <span className="relative rounded-md font-semibold text-purple">Upload a file</span>
+                            <span className="relative rounded-md font-semibold text-purple">Upload files</span>
                             <p className="pl-1">or drag and drop</p>
                           </div>
                           <p className="text-xs leading-5 text-gray-500 pointer-events-none">PNG, JPG, GIF up to 10MB</p>
@@ -1198,6 +1269,15 @@ export default function DashboardPage() {
         <nav className="bg-white rounded-[2.5rem] shadow-sm border border-purple/10 overflow-hidden">
           <div className="p-4 space-y-2">
             
+            {(unreadMessagesCount > 0 || pendingOffersCount > 0 || approvedDealsCount > 0) && (
+              <button 
+                onClick={clearAllNotifications}
+                className="w-full flex items-center justify-center gap-2 p-2 mb-2 text-[10px] font-black uppercase tracking-widest text-red-500 bg-red-50 rounded-xl hover:bg-red-100 transition-all border border-red-100"
+              >
+                Clear Notifications
+              </button>
+            )}
+
             <button 
               onClick={() => isProfileComplete && setActiveTab("browse")}
               disabled={!isProfileComplete}
@@ -1320,6 +1400,86 @@ export default function DashboardPage() {
           </div>
         </nav>
       </div>
+
+      {/* Product Detail Modal */}
+      {selectedProduct && (
+        <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-gray-900/60 backdrop-blur-sm" onClick={() => setSelectedProduct(null)}></div>
+          <div className="bg-white rounded-[2.5rem] w-full max-w-4xl max-h-[90vh] overflow-hidden shadow-2xl relative flex flex-col md:flex-row animate-in zoom-in-95 duration-300">
+            <button 
+              onClick={() => setSelectedProduct(null)}
+              className="absolute top-6 right-6 z-10 w-10 h-10 rounded-full bg-white/90 backdrop-blur-md flex items-center justify-center shadow-md text-gray-900 hover:text-purple transition-all"
+            >
+              <X size={20} />
+            </button>
+
+            {/* Images Gallery */}
+            <div className="md:w-1/2 h-[40vh] md:h-auto relative bg-gray-50 flex flex-col">
+              <div className="flex-1 relative">
+                <Image src={selectedProduct.images[0] || selectedProduct.image} alt="preview" fill className="object-cover" />
+              </div>
+              {selectedProduct.images.length > 1 && (
+                <div className="p-4 flex gap-2 overflow-x-auto bg-white/50 backdrop-blur-sm border-t border-gray-100">
+                  {selectedProduct.images.map((img, i) => (
+                    <div key={i} className="w-16 h-16 rounded-xl overflow-hidden border-2 border-transparent hover:border-purple cursor-pointer transition-all shrink-0">
+                      <Image src={img} alt={`thumb ${i}`} width={64} height={64} className="object-cover h-full" />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Info Area */}
+            <div className="flex-1 p-8 md:p-12 overflow-y-auto">
+              <div className="mb-6">
+                <span className="text-[10px] font-black uppercase tracking-widest text-purple bg-lavender/30 px-3 py-1.5 rounded-full">{selectedProduct.condition} Condition</span>
+                <h2 className="text-4xl font-black text-gray-900 tracking-tighter mt-4 leading-none">{selectedProduct.title}</h2>
+                <div className="flex items-center gap-2 mt-4">
+                  <span className="text-3xl font-extrabold text-blue tracking-tighter">{selectedProduct.price}</span>
+                  <div className="h-4 w-px bg-gray-200"></div>
+                  <span className="text-sm font-medium text-gray-500">Listed by {selectedProduct.sellerName}</span>
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <div>
+                  <h4 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Description / Bio</h4>
+                  <p className="text-gray-600 leading-relaxed font-medium">{selectedProduct.description || "No description provided for this item."}</p>
+                </div>
+
+                {selectedProduct.tags && selectedProduct.tags.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {selectedProduct.tags.map((tag, i) => (
+                      <span key={i} className="text-[10px] font-bold text-gray-500 bg-gray-100 px-3 py-1.5 rounded-lg border border-gray-200 cursor-default">#{tag}</span>
+                    ))}
+                  </div>
+                )}
+
+                <div className="pt-8 flex gap-3">
+                  <button 
+                    onClick={() => {
+                      toggleCart(selectedProduct.id);
+                      setSelectedProduct(null);
+                    }}
+                    className={`flex-1 btn ${cart.includes(selectedProduct.id) ? 'bg-gray-100 text-gray-400' : 'btn-primary'} py-4 font-black tracking-tighter !rounded-2xl transition-all active:scale-95`}
+                  >
+                    {cart.includes(selectedProduct.id) ? "In Your Cart" : "Enlist to Cart"}
+                  </button>
+                  <button 
+                    onClick={() => {
+                      startChat(selectedProduct.id, selectedProduct.sellerId);
+                      setSelectedProduct(null);
+                    }}
+                    className="flex-1 btn bg-gray-900 text-white flex items-center justify-center gap-2 py-4 font-black tracking-tighter !rounded-2xl transition-all hover:bg-black active:scale-95 shadow-xl"
+                  >
+                    <MessageSquare size={18} /> Chat with Seller
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
