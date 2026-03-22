@@ -149,6 +149,41 @@ export default function DashboardPage() {
         negotiatedPrice: o.negotiated_price, place: o.meetup_location, status: o.status
       })));
     }
+
+    // 3. Fetch Chats
+    if (user) {
+      const { data: cData, error: cError } = await supabase
+        .from('chats')
+        .select(`
+          id, product_id, buyer_id, seller_id, created_at,
+          messages ( id, text, sender_id, is_read, created_at )
+        `)
+        .or(`buyer_id.eq.${user.id},seller_id.eq.${user.id}`);
+
+      if (cError) {
+        logDebug(`fetchGlobalData chats error: ${cError.message}`);
+      } else if (cData) {
+        const formattedChats: Chat[] = cData.map((c: any) => {
+          const isBuyer = c.buyer_id === user.id;
+          const otherUserId = isBuyer ? c.seller_id : c.buyer_id;
+          return {
+            id: c.id,
+            productId: c.product_id,
+            otherUser: otherUserId,
+            messages: (c.messages || [])
+              .sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+              .map((m: any) => ({
+                id: m.id,
+                text: m.text,
+                sender: m.sender_id === user.id ? "me" : "other",
+                status: m.is_read ? "read" : "sent"
+              })),
+            dealApproved: { me: false, other: false }
+          };
+        });
+        setChats(formattedChats);
+      }
+    }
   };
 
   useEffect(() => {
@@ -172,6 +207,8 @@ export default function DashboardPage() {
       const channels = supabase.channel('custom-all-channel')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => { fetchGlobalData(); })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'offers' }, () => { fetchGlobalData(); })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'chats' }, () => { fetchGlobalData(); })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, () => { fetchGlobalData(); })
         .subscribe();
 
       return () => { supabase.removeChannel(channels); };
@@ -221,65 +258,65 @@ export default function DashboardPage() {
     if (!isProfileComplete) setActiveTab("browse");
   };
 
-  const startChat = (productId: number, otherUser: string) => {
+  const startChat = async (productId: number, otherUser: string) => {
     const existingChat = chats.find(c => c.productId === productId);
     if (existingChat) {
       setActiveChatId(existingChat.id);
     } else {
-      const newChat: Chat = {
-        id: Date.now(),
-        productId,
-        otherUser,
-        messages: [{ id: Date.now(), text: "Hello, I am interested in this item.", sender: "me" }],
-        dealApproved: { me: false, other: false }
-      };
-      setChats([...chats, newChat]);
-      setActiveChatId(newChat.id);
+      const supabase = getSupabase();
+      const { data, error } = await supabase.from('chats').insert([{
+        product_id: productId,
+        buyer_id: user!.id,
+        seller_id: otherUser
+      }]).select().single();
+
+      if (data) {
+        await supabase.from('messages').insert([{
+          chat_id: data.id,
+          sender_id: user!.id,
+          text: "Hello, I am interested in this item."
+        }]);
+        setActiveChatId(data.id);
+        fetchGlobalData();
+      } else if (error) {
+        showToast("Error starting chat: " + error.message);
+      }
     }
     setActiveTab("chat");
   };
 
-  const sendMessage = () => {
+  const sendMessage = async () => {
     if (!newMessage.trim() || !activeChatId) return;
-    
-    // Security: trim message length
     const cleanText = newMessage.trim().slice(0, 500);
+    const supabase = getSupabase();
     
-    setChats(chats.map(c => {
-      if (c.id === activeChatId) {
-        return {
-          ...c,
-          messages: [...c.messages, { 
-            id: Date.now(), 
-            text: cleanText, 
-            sender: "me",
-            status: "read", // mocking immediate read status for demonstration
-            replyToId: replyingTo?.id 
-          }]
-        };
-      }
-      return c;
-    }));
-    setNewMessage("");
-    setReplyingTo(null);
+    setNewMessage(""); // clear input optimistically
+    const { error } = await supabase.from('messages').insert([{
+      chat_id: activeChatId,
+      sender_id: user!.id,
+      text: cleanText
+    }]);
+
+    if (error) {
+      showToast("Error sending message: " + error.message);
+    } else {
+      setReplyingTo(null);
+      fetchGlobalData();
+    }
   };
 
-  const deleteMessage = (chatId: number, msgId: number) => {
-    setChats(chats.map(c => {
-      if (c.id === chatId) {
-        return {
-          ...c,
-          messages: c.messages.map(m => m.id === msgId ? { ...m, isDeleted: true } : m)
-        };
-      }
-      return c;
-    }));
+  const deleteMessage = async (chatId: number, msgId: number) => {
+    const supabase = getSupabase();
+    await supabase.from('messages').delete().eq('id', msgId);
+    fetchGlobalData();
   };
 
-  const deleteChat = (chatId: number) => {
+  const deleteChat = async (chatId: number) => {
     if (confirm("Are you sure you want to permanently delete this conversation?")) {
-      setChats(chats.filter(c => c.id !== chatId));
+      const supabase = getSupabase();
+      await supabase.from('chats').delete().eq('id', chatId);
       if (activeChatId === chatId) setActiveChatId(null);
+      fetchGlobalData();
     }
   };
 
@@ -288,6 +325,7 @@ export default function DashboardPage() {
     await supabase.from('products').update({ status: 'Sold' }).eq('id', offer.productId);
     await supabase.from('offers').update({ status: 'approved' }).eq('id', offer.id);
     showToast("Deal Approved! Item is now marked as Sold.");
+    await fetchGlobalData();
   };
 
   const handleRejectOffer = async (offer: Offer) => {
@@ -295,6 +333,7 @@ export default function DashboardPage() {
     await supabase.from('products').update({ status: 'In Stock' }).eq('id', offer.productId);
     await supabase.from('offers').update({ status: 'rejected' }).eq('id', offer.id);
     showToast("Offer rejected. Item is back in stock.");
+    await fetchGlobalData();
   };
 
   const handleSendDeal = async () => {
