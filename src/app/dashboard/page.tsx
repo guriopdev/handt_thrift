@@ -79,6 +79,7 @@ export default function DashboardPage() {
 
   // Dashboard Tabs: 'browse', 'chat', 'sell', 'cart', 'wishlist', 'profile'
   const [activeTab, setActiveTab] = useState("profile");
+  const [profiles, setProfiles] = useState<Record<string, string>>({});
 
   // Dummy State for Functionality
   // Start empty — all products come exclusively from Supabase DB
@@ -130,8 +131,10 @@ export default function DashboardPage() {
     const supabase = getSupabase();
 
     // 0. Fetch Profiles map
-    const { data: profilesData } = await supabase.from('profiles').select('id, name');
+    const { data: profilesData } = await supabase.from('profiles').select('id, name, location');
     const profilesMap = new Map(profilesData?.map((p: any) => [p.id, p.name]) || []);
+    const locationsMap = Object.fromEntries(profilesData?.map((p: any) => [p.id, p.location]) || []);
+    setProfiles(locationsMap);
 
     // 1. Fetch ALL products
     logDebug(`Fetching products...`);
@@ -228,11 +231,20 @@ export default function DashboardPage() {
 
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
 
-  const clearAllNotifications = () => {
+  const clearAllNotifications = async () => {
+    if (!user) return;
+    const supabase = getSupabase();
+    
+    // 1. Mark all messages as read
+    await supabase.from('messages').update({ status: 'read' }).neq('sender_id', user.id);
+    
+    // 2. We can also handle offers/deals if needed.
+    // For now, let's just clear the local state to give instant feedback.
     setUnreadMessagesCount(0);
     setPendingOffersCount(0);
     setApprovedDealsCount(0);
-    showToast("Notifications cleared successfully!");
+    showToast("All notifications cleared from account!");
+    fetchGlobalData();
   };
 
   useEffect(() => {
@@ -1053,30 +1065,37 @@ export default function DashboardPage() {
                 </div>
 
                 <div>
-                   <label className="block text-sm font-bold leading-6 text-gray-900 mb-2">Upload Images (One or More) <span className="text-red-500">*</span></label>
-                   <div className="flex justify-center rounded-3xl border border-dashed border-gray-300 px-6 py-10 hover:bg-gray-50 transition-colors cursor-pointer relative overflow-hidden">
-                    <input type="file" required accept="image/*" multiple className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" 
-                      onChange={(e) => e.target.files && setSellImages(Array.from(e.target.files))} />
-                    <div className="text-center w-full z-10 pointer-events-none">
-                      {sellImages.length > 0 ? (
-                        <p className="text-sm font-bold text-purple truncate">{sellImages.length} images selected</p>
-                      ) : (
-                        <>
-                          <ImageIcon className="mx-auto h-12 w-12 text-gray-300 pointer-events-none" aria-hidden="true" />
-                          <div className="mt-4 flex text-sm justify-center leading-6 text-gray-600 pointer-events-none">
-                            <span className="relative rounded-md font-semibold text-purple">Upload files</span>
-                            <p className="pl-1">or drag and drop</p>
-                          </div>
-                          <p className="text-xs leading-5 text-gray-500 pointer-events-none">PNG, JPG, GIF up to 10MB</p>
-                        </>
-                      )}
-                    </div>
-                  </div>
+                   <label className="block text-sm font-bold leading-6 text-gray-900 mb-2">Item Images <span className="text-red-500">*</span></label>
+                   <div className="flex flex-wrap gap-4">
+                     {sellImages.map((file, idx) => (
+                       <div key={idx} className="relative w-24 h-24 rounded-2xl overflow-hidden border-2 border-purple-100 group">
+                         <Image src={URL.createObjectURL(file)} alt="preview" fill className="object-cover" />
+                         <button 
+                          type="button"
+                          onClick={() => setSellImages(sellImages.filter((_, i) => i !== idx))}
+                          className="absolute top-1 right-1 bg-white/90 backdrop-blur-md rounded-full p-1 text-red-500 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                         >
+                           <X size={14} />
+                         </button>
+                       </div>
+                     ))}
+                     <label className="w-24 h-24 rounded-2xl border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-400 hover:bg-gray-50 hover:border-purple cursor-pointer transition-all">
+                       <PlusCircle size={24} />
+                       <span className="text-[10px] mt-1 font-bold">Add Image</span>
+                       <input type="file" multiple accept="image/*" className="hidden" 
+                         onChange={(e) => {
+                           if (e.target.files) {
+                              setSellImages([...sellImages, ...Array.from(e.target.files)]);
+                           }
+                         }} />
+                     </label>
+                   </div>
+                   <p className="text-[10px] text-gray-400 mt-2">Upload one or multiple photos of your item from different angles.</p>
                 </div>
 
                 <div className="pt-4">
-                  <button type="submit" className="w-full btn btn-primary py-4 text-lg !rounded-full shadow-lg shadow-purple/20">
-                    List Item for Sale
+                  <button type="submit" className="w-full btn btn-primary py-4 text-lg !rounded-full shadow-lg shadow-purple/20 transition-all active:scale-95">
+                    Post My Listing
                   </button>
                 </div>
               </form>
@@ -1437,7 +1456,12 @@ export default function DashboardPage() {
                 <div className="flex items-center gap-2 mt-4">
                   <span className="text-3xl font-extrabold text-blue tracking-tighter">{selectedProduct.price}</span>
                   <div className="h-4 w-px bg-gray-200"></div>
-                  <span className="text-sm font-medium text-gray-500">Listed by {selectedProduct.sellerName}</span>
+                  <div className="flex flex-col">
+                    <span className="text-sm font-bold text-gray-900 leading-none">Seller: {selectedProduct.sellerName}</span>
+                    <span className="text-[10px] text-gray-400 font-medium flex items-center gap-1">
+                      <MapPin size={10} /> {profiles[selectedProduct.sellerId] || "NIT Hamirpur Campus"}
+                    </span>
+                  </div>
                 </div>
               </div>
 
