@@ -767,7 +767,7 @@ export default function DashboardPage() {
                           {product && <Image src={product.image} alt="item" fill className="object-cover" />}
                         </div>
                         <div className="min-w-0">
-                          <h4 className="text-sm font-bold text-gray-900 truncate">{chat.otherUser}</h4>
+                          <h4 className="text-sm font-bold text-gray-900 truncate">{chat.otherUserName || chat.otherUser}</h4>
                           <p className="text-xs text-gray-500 truncate">{product?.title}</p>
                         </div>
                       </div>
@@ -785,7 +785,7 @@ export default function DashboardPage() {
                     <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
                       <div className="font-bold flex items-center gap-2">
                         <MessageSquare size={18} className="text-purple" />
-                        Chatting with {chats.find(c => c.id === activeChatId)?.otherUser}
+                        Chatting with {chats.find(c => c.id === activeChatId)?.otherUserName || chats.find(c => c.id === activeChatId)?.otherUser}
                       </div>
                       <button onClick={() => deleteChat(activeChatId)} className="p-2 text-gray-400 hover:text-red-500 rounded-full hover:bg-red-50 transition-colors" title="Delete Chat">
                         <Trash2 size={18} />
