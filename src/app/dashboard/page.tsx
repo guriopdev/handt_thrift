@@ -112,12 +112,6 @@ export default function DashboardPage() {
   const [pendingOffersCount, setPendingOffersCount] = useState(0);
   const [approvedDealsCount, setApprovedDealsCount] = useState(0);
   
-  // ======== DEBUG CONSOLE ========
-  const [debugLog, setDebugLog] = useState<string[]>([`Booted correctly. Connected to: ${process.env.NEXT_PUBLIC_SUPABASE_URL}`]);
-  const logDebug = (msg: string) => {
-    console.log(msg);
-    setDebugLog(prev => [msg, ...prev]);
-  };
   // ===============================
 
   const [negotiatedPrices, setNegotiatedPrices] = useState<Record<number, string>>({});
@@ -140,17 +134,17 @@ export default function DashboardPage() {
     setProfiles(locationsMap);
 
     // 1. Fetch ALL products
-    logDebug(`Fetching products...`);
+    console.log(`Fetching products...`);
     const { data: pData, error: pError } = await supabase
       .from('products')
       .select('*')
       .order('created_at', { ascending: false });
 
     if (pError) {
-      logDebug(`ERROR fetching products: ${JSON.stringify(pError)}`);
+      console.error(`ERROR fetching products: ${JSON.stringify(pError)}`);
       showToast(`Browse error: ${pError.message}`);
     } else {
-      logDebug(`SUCCESS: Fetched ${pData?.length || 0} products.`);
+      console.log(`SUCCESS: Fetched ${pData?.length || 0} products.`);
       setProducts((pData ?? []).map((p: any) => ({
         id: p.id, title: p.title, price: p.price, condition: p.condition,
         image: p.image_url, 
@@ -187,7 +181,7 @@ export default function DashboardPage() {
         .or(`buyer_id.eq.${user.id},seller_id.eq.${user.id}`);
 
       if (cError) {
-        logDebug(`fetchGlobalData chats error: ${cError.message}`);
+        console.error(`fetchGlobalData chats error: ${cError.message}`);
       } else if (cData) {
         let totalUnread = 0;
         const formattedChats: Chat[] = cData.map((c: any) => {
@@ -462,7 +456,7 @@ export default function DashboardPage() {
     const cleanDescription = sellDescription.trim().slice(0, 500);
 
     // Step 1: Ensure the seller's profile row exists in DB (required by FK constraint)
-    logDebug(`Step 1: Upserting profile for ${user!.id}...`);
+    console.log(`Step 1: Upserting profile for ${user!.id}...`);
     const { error: profileError } = await supabase.from('profiles').upsert({
       id: user!.id,
       name: user?.name || "Anonymous",
@@ -471,14 +465,14 @@ export default function DashboardPage() {
     }, { onConflict: 'id' });
 
     if (profileError) {
-      logDebug(`ERROR: Profile upsert failed: ${JSON.stringify(profileError)}`);
+      console.error(`ERROR: Profile upsert failed: ${JSON.stringify(profileError)}`);
       showToast(`Error saving profile: ${profileError.message}`);
       return;
     }
-    logDebug(`SUCCESS: Profile upserted!`);
+    console.log(`SUCCESS: Profile upserted!`);
 
     // Step 2: Upload images to Supabase Storage
-    logDebug(`Step 2: Uploading images...`);
+    console.log(`Step 2: Uploading images...`);
     const uploadedUrls: string[] = [];
     
     for (const file of sellImages) {
@@ -495,12 +489,12 @@ export default function DashboardPage() {
         // Use the absolute URL including the domain for better compatibility
         const publicUrl = urlData.publicUrl;
         uploadedUrls.push(publicUrl);
-        logDebug(`SUCCESS: Image uploaded: ${publicUrl}`);
+        console.log(`SUCCESS: Image uploaded: ${publicUrl}`);
       }
     }
 
     const imageUrl = uploadedUrls[0] || "https://images.unsplash.com/photo-1523381210434-271e8be1f52b?auto=format&fit=crop&q=80";
-    logDebug(`Step 3: Inserting product with ${uploadedUrls.length} images...`);
+    console.log(`Step 3: Inserting product with ${uploadedUrls.length} images...`);
     
     const { data: dbData, error: dbError } = await supabase.from('products').insert([{
       seller_id: user!.id,
@@ -516,10 +510,10 @@ export default function DashboardPage() {
     }]).select();
 
     if (dbError) {
-      logDebug(`ERROR: Product insertion failed: ${JSON.stringify(dbError)}`);
+      console.error(`ERROR: Product insertion failed: ${JSON.stringify(dbError)}`);
       showToast(`Error creating product: ${dbError.message}`);
     } else {
-      logDebug(`SUCCESS: Product inserted. DB returned row: ${JSON.stringify(dbData)}`);
+      console.log(`SUCCESS: Product inserted. DB returned row: ${JSON.stringify(dbData)}`);
       setSellTitle(""); setSellPrice(""); setSellCondition(""); setSellImages([]); 
       setSellDescription(""); setSellTags("");
       showToast("Item listed successfully for everyone to see!");
@@ -566,13 +560,6 @@ export default function DashboardPage() {
 
       {/* Main Content Area */}
       <div className="flex-1 w-full lg:w-3/4 p-4 lg:p-8 overflow-y-auto pt-24 pb-20 lg:pb-8">
-        
-        {/* ======== DEBUG CONSOLE VISUAL ======== */}
-        <div className="mb-6 p-4 bg-red-950 text-red-400 border border-red-800 rounded-lg text-xs font-mono max-h-40 overflow-y-auto">
-          <strong>SYSTEM DEBUG CONSOLE:</strong><br />
-          {debugLog.map((log, i) => <div key={i}>{log}</div>)}
-        </div>
-        
         <div className="max-w-6xl mx-auto bg-white/80 backdrop-blur-md rounded-[2.5rem] shadow-xl border border-purple/10 min-h-full p-6 md:p-10 relative">
           
           <div className="flex justify-between items-center mb-8">
