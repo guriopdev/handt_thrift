@@ -94,6 +94,14 @@ export default function DashboardPage() {
   const [sellImage, setSellImage] = useState<File | null>(null);
 
   const [pendingOffers, setPendingOffers] = useState<Offer[]>([]);
+  
+  // ======== DEBUG CONSOLE ========
+  const [debugLog, setDebugLog] = useState<string[]>([`Booted correctly. Connected to: ${process.env.NEXT_PUBLIC_SUPABASE_URL}`]);
+  const logDebug = (msg: string) => {
+    console.log(msg);
+    setDebugLog(prev => [msg, ...prev]);
+  };
+  // ===============================
 
   const [negotiatedPrice, setNegotiatedPrice] = useState("");
   const [meetupLocation, setMeetupLocation] = useState("");
@@ -109,16 +117,17 @@ export default function DashboardPage() {
     const supabase = getSupabase();
 
     // 1. Fetch ALL products from Supabase
+    logDebug(`Fetching products...`);
     const { data: pData, error: pError } = await supabase
       .from('products')
       .select('*')
       .order('created_at', { ascending: false });
 
     if (pError) {
-      // Surface the REAL error so we can debug it
-      console.error('fetchGlobalData products error:', pError);
+      logDebug(`ERROR fetching products: ${JSON.stringify(pError)}`);
       showToast(`Browse error: ${pError.message}`);
     } else {
+      logDebug(`SUCCESS: Fetched ${pData?.length || 0} products.`);
       // Always overwrite — even empty array clears stale data
       setProducts((pData ?? []).map((p: any) => ({
         id: p.id, title: p.title, price: p.price, condition: p.condition,
@@ -328,7 +337,7 @@ export default function DashboardPage() {
     const cleanPrice = Math.abs(parseInt(sellPrice) || 0).toString().slice(0, 7);
 
     // Step 1: Ensure the seller's profile row exists in DB (required by FK constraint)
-    // Without this, the products insert fails silently if profile was never saved
+    logDebug(`Step 1: Upserting profile for ${user!.id}...`);
     const { error: profileError } = await supabase.from('profiles').upsert({
       id: user!.id,
       name: user?.name || "Anonymous",
@@ -337,12 +346,14 @@ export default function DashboardPage() {
     }, { onConflict: 'id' });
 
     if (profileError) {
-      console.error('Profile upsert error:', profileError);
+      logDebug(`ERROR: Profile upsert failed: ${JSON.stringify(profileError)}`);
       showToast(`Error saving profile: ${profileError.message}`);
       return;
     }
+    logDebug(`SUCCESS: Profile upserted.`);
 
     // Step 2: Upload image to Supabase Storage
+    logDebug(`Step 2: Uploading image...`);
     const fileExt = sellImage.name.split('.').pop();
     const fileName = `${user?.id}-${Date.now()}.${fileExt}`;
     const { data: uploadData, error: uploadError } = await supabase.storage
@@ -351,17 +362,19 @@ export default function DashboardPage() {
 
     let imageUrl = "https://images.unsplash.com/photo-1523381210434-271e8be1f52b?auto=format&fit=crop&q=80";
     if (!uploadError && uploadData) {
+      logDebug(`SUCCESS: Image uploaded.`);
       const { data: urlData } = supabase.storage
         .from('product-images')
         .getPublicUrl(uploadData.path);
       imageUrl = urlData.publicUrl;
     } else if (uploadError) {
-      console.error('Image upload error:', uploadError.message);
+      logDebug(`WARNING: Image upload failed: ${uploadError.message}. Using placeholder.`);
       // Continue with placeholder — don't block listing
     }
 
     // Step 3: Insert product — CHECK the error this time!
-    const { error: insertError } = await supabase.from('products').insert([{
+    logDebug(`Step 3: Inserting product into database...`);
+    const { data: insertData, error: insertError } = await supabase.from('products').insert([{
       seller_id: user!.id,
       seller_name: user?.name || "Anonymous",
       title: cleanTitle,
@@ -369,14 +382,14 @@ export default function DashboardPage() {
       condition: sellCondition || "Good",
       image_url: imageUrl,
       status: "In Stock"
-    }]);
+    }]).select('*');
 
     if (insertError) {
-      // Show the REAL error so we can debug it
-      console.error('Product insert error:', insertError);
+      logDebug(`ERROR: Product insert failed: ${JSON.stringify(insertError)}`);
       showToast(`Failed to list item: ${insertError.message}`);
       return;
     }
+    logDebug(`SUCCESS: Product inserted. DB returned row: ${JSON.stringify(insertData)}`);
 
     // Success — clear form and refresh
     setSellTitle("");
@@ -424,9 +437,16 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* LEFT AREA (MAIN CONTENT) */}
-      <div className="flex-1 p-4 md:p-8 md:pr-4 overflow-y-auto h-screen custom-scrollbar">
-        <div className="bg-white/80 backdrop-blur-md rounded-[2.5rem] shadow-xl border border-purple/10 min-h-full p-6 md:p-10 relative">
+      {/* Main Content Area */}
+      <div className="flex-1 w-full lg:w-3/4 p-4 lg:p-8 overflow-y-auto pt-24 pb-20 lg:pb-8">
+        
+        {/* ======== DEBUG CONSOLE VISUAL ======== */}
+        <div className="mb-6 p-4 bg-red-950 text-red-400 border border-red-800 rounded-lg text-xs font-mono max-h-40 overflow-y-auto">
+          <strong>SYSTEM DEBUG CONSOLE:</strong><br />
+          {debugLog.map((log, i) => <div key={i}>{log}</div>)}
+        </div>
+        
+        <div className="max-w-6xl mx-auto bg-white/80 backdrop-blur-md rounded-[2.5rem] shadow-xl border border-purple/10 min-h-full p-6 md:p-10 relative">
           
           <div className="flex justify-between items-center mb-8">
             <h1 className="text-3xl font-black text-gray-900 tracking-tighter capitalize fade-in">
