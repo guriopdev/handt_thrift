@@ -32,6 +32,7 @@ type ChatMessage = {
   status?: "sent" | "delivered" | "read";
   replyToId?: number;
   isDeleted?: boolean;
+  createdAt?: string;
 };
 
 type Chat = {
@@ -96,6 +97,11 @@ export default function DashboardPage() {
   const [sellImage, setSellImage] = useState<File | null>(null);
 
   const [pendingOffers, setPendingOffers] = useState<Offer[]>([]);
+  
+  // Notification States
+  const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
+  const [pendingOffersCount, setPendingOffersCount] = useState(0);
+  const [approvedDealsCount, setApprovedDealsCount] = useState(0);
   
   // ======== DEBUG CONSOLE ========
   const [debugLog, setDebugLog] = useState<string[]>([`Booted correctly. Connected to: ${process.env.NEXT_PUBLIC_SUPABASE_URL}`]);
@@ -162,35 +168,57 @@ export default function DashboardPage() {
         .from('chats')
         .select(`
           id, product_id, buyer_id, seller_id, created_at,
-          messages ( id, text, sender_id, status, created_at )
+          messages ( id, text, sender_id, status, reply_to_id, created_at )
         `)
         .or(`buyer_id.eq.${user.id},seller_id.eq.${user.id}`);
 
       if (cError) {
         logDebug(`fetchGlobalData chats error: ${cError.message}`);
       } else if (cData) {
+        let totalUnread = 0;
         const formattedChats: Chat[] = cData.map((c: any) => {
           const isBuyer = c.buyer_id === user.id;
           const otherUserId = isBuyer ? c.seller_id : c.buyer_id;
           const otherUserName = profilesMap.get(otherUserId) || "Unknown User";
+          
+          const msgs = (c.messages || [])
+            .sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+            .map((m: any) => {
+              if (m.sender_id !== user.id && m.status !== 'read') totalUnread++;
+              return {
+                id: m.id,
+                text: m.text,
+                sender: m.sender_id === user.id ? "me" : "other" as "me" | "other",
+                status: m.status,
+                replyToId: m.reply_to_id,
+                createdAt: m.created_at
+              };
+            });
+
           return {
             id: c.id,
             productId: c.product_id,
             otherUser: otherUserId,
             otherUserName,
-            messages: (c.messages || [])
-              .sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
-              .map((m: any) => ({
-                id: m.id,
-                text: m.text,
-                sender: m.sender_id === user.id ? "me" : "other",
-                status: m.status
-              })),
+            messages: msgs,
             dealApproved: { me: false, other: false }
           };
         });
         setChats(formattedChats);
+        setUnreadMessagesCount(totalUnread);
       }
+    }
+
+    // Update other notification counts
+    if (user) {
+      // Pending offers for products I own
+      const myProductIds = pData?.filter((p: any) => p.seller_id === user.id).map((p: any) => p.id) || [];
+      const pendingCount = oData?.filter((o: any) => myProductIds.includes(o.product_id) && o.status === 'pending').length || 0;
+      setPendingOffersCount(pendingCount);
+
+      // Approved deals where I am the buyer
+      const approvedCount = oData?.filter((o: any) => o.buyer_id === user.id && o.status === 'approved').length || 0;
+      setApprovedDealsCount(approvedCount);
     }
   };
 
@@ -267,7 +295,8 @@ export default function DashboardPage() {
   };
 
   const startChat = async (productId: number, otherUser: string) => {
-    const existingChat = chats.find(c => c.productId === productId);
+    // Group by user — check for ANY existing chat with this person
+    const existingChat = chats.find(c => c.otherUser === otherUser);
     if (existingChat) {
       setActiveChatId(existingChat.id);
     } else {
@@ -302,7 +331,8 @@ export default function DashboardPage() {
     const { error } = await supabase.from('messages').insert([{
       chat_id: activeChatId,
       sender_id: user!.id,
-      text: cleanText
+      text: cleanText,
+      reply_to_id: replyingTo?.id
     }]);
 
     if (error) {
@@ -755,14 +785,20 @@ export default function DashboardPage() {
                   <h3 className="font-bold text-lg">Negotiations</h3>
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar">
-                  {chats.map(chat => {
+                  {Array.from(chats.reduce((acc, chat) => {
+                    const existing = acc.get(chat.otherUser);
+                    if (!existing || chat.id > existing.id) acc.set(chat.otherUser, chat);
+                    return acc;
+                  }, new Map<string, Chat>()).values()).map(chat => {
                     const product = products.find(p => p.id === chat.productId);
+                    const hasUnread = chat.messages.some(m => m.sender === 'other' && m.status !== 'read');
                     return (
                       <div 
                         key={chat.id} 
                         onClick={() => setActiveChatId(chat.id)}
-                        className={`p-3 rounded-2xl cursor-pointer flex gap-3 items-center transition-colors ${activeChatId === chat.id ? 'bg-white shadow-sm border border-purple/20' : 'hover:bg-gray-100 border border-transparent'}`}
+                        className={`p-3 rounded-2xl cursor-pointer flex gap-3 items-center transition-colors relative ${activeChatId === chat.id ? 'bg-white shadow-sm border border-purple/20' : 'hover:bg-gray-100 border border-transparent'}`}
                       >
+                        {hasUnread && <div className="absolute top-3 right-3 w-3 h-3 bg-red-500 rounded-full border-2 border-white animate-pulse" />}
                         <div className="w-12 h-12 rounded-xl border border-gray-200 overflow-hidden relative flex-shrink-0">
                           {product && <Image src={product.image} alt="item" fill className="object-cover" />}
                         </div>
@@ -1174,22 +1210,26 @@ export default function DashboardPage() {
             <button 
               onClick={() => isProfileComplete && setActiveTab("chat")}
               disabled={!isProfileComplete}
-              className={`w-full flex items-center justify-between p-4 rounded-2xl font-bold transition-all ${activeTab === 'chat' ? 'bg-gradient-to-r from-lavender/20 to-purple/10 text-purple shadow-sm' : 'text-gray-600 hover:bg-gray-50'} ${!isProfileComplete && 'opacity-50 cursor-not-allowed'}`}
+              className={`w-full flex items-center justify-between p-4 rounded-2xl font-bold transition-all relative ${activeTab === 'chat' ? 'bg-gradient-to-r from-lavender/20 to-purple/10 text-purple shadow-sm' : 'text-gray-600 hover:bg-gray-50'} ${!isProfileComplete && 'opacity-50 cursor-not-allowed'}`}
             >
-              <div className="flex items-center gap-4">
-                <MessageSquare size={22} className={activeTab === 'chat' ? 'text-purple' : 'text-gray-400'} />
+              <div className="flex items-center gap-4 text-purple">
+                <MessageSquare size={22} />
                 2. Chat
               </div>
-              {chats.length > 0 && <span className="w-6 h-6 rounded-full bg-purple text-white text-xs flex items-center justify-center">{chats.length}</span>}
+              {unreadMessagesCount > 0 && <span className="w-6 h-6 rounded-full bg-red-500 text-white text-xs flex items-center justify-center border-2 border-white font-black">{unreadMessagesCount}</span>}
+              {!unreadMessagesCount && chats.length > 0 && <span className="w-6 h-6 rounded-full bg-purple/10 text-purple text-xs flex items-center justify-center">{chats.length}</span>}
             </button>
 
             <button 
               onClick={() => isProfileComplete && setActiveTab("sell")}
               disabled={!isProfileComplete}
-              className={`w-full flex items-center gap-4 p-4 rounded-2xl font-bold transition-all ${activeTab === 'sell' ? 'bg-gradient-to-r from-purple/10 to-blue/10 text-purple shadow-sm' : 'text-gray-600 hover:bg-gray-50'} ${!isProfileComplete && 'opacity-50 cursor-not-allowed'}`}
+              className={`w-full flex items-center justify-between p-4 rounded-2xl font-bold transition-all relative ${activeTab === 'sell' ? 'bg-gradient-to-r from-purple/10 to-blue/10 text-purple shadow-sm' : 'text-gray-600 hover:bg-gray-50'} ${!isProfileComplete && 'opacity-50 cursor-not-allowed'}`}
             >
-              <PlusCircle size={22} className={activeTab === 'sell' ? 'text-purple' : 'text-gray-400'} />
-              3. Sell
+              <div className="flex items-center gap-4 text-purple">
+                <PlusCircle size={22} />
+                3. Sell
+              </div>
+              {pendingOffersCount > 0 && <span className="w-6 h-6 rounded-full bg-orange-500 text-white text-xs flex items-center justify-center border-2 border-white font-black">{pendingOffersCount}</span>}
             </button>
 
             <button 
@@ -1197,8 +1237,8 @@ export default function DashboardPage() {
               disabled={!isProfileComplete}
               className={`w-full flex items-center justify-between p-4 rounded-2xl font-bold transition-all ${activeTab === 'cart' ? 'bg-gradient-to-r from-blue/10 to-lavender/20 text-blue shadow-sm' : 'text-gray-600 hover:bg-gray-50'} ${!isProfileComplete && 'opacity-50 cursor-not-allowed'}`}
             >
-              <div className="flex items-center gap-4">
-                <ShoppingBag size={22} className={activeTab === 'cart' ? 'text-blue' : 'text-gray-400'} />
+              <div className="flex items-center gap-4 text-blue">
+                <ShoppingBag size={22} />
                 4. Cart
               </div>
               {cart.length > 0 && <span className="w-6 h-6 rounded-full bg-blue text-white text-xs flex items-center justify-center">{cart.length}</span>}
@@ -1209,8 +1249,8 @@ export default function DashboardPage() {
               disabled={!isProfileComplete}
               className={`w-full flex items-center justify-between p-4 rounded-2xl font-bold transition-all ${activeTab === 'wishlist' ? 'bg-gradient-to-r from-red-50 to-red-100/50 text-red-500 shadow-sm' : 'text-gray-600 hover:bg-gray-50'} ${!isProfileComplete && 'opacity-50 cursor-not-allowed'}`}
             >
-              <div className="flex items-center gap-4">
-                <Heart size={22} className={activeTab === 'wishlist' ? 'text-red-500' : 'text-gray-400'} />
+              <div className="flex items-center gap-4 text-red-500">
+                <Heart size={22} />
                 5. Wishlist
               </div>
               {wishlist.length > 0 && <span className="w-6 h-6 rounded-full bg-red-500 text-white text-xs flex items-center justify-center">{wishlist.length}</span>}
@@ -1219,12 +1259,13 @@ export default function DashboardPage() {
             <button 
               onClick={() => isProfileComplete && setActiveTab("payment")}
               disabled={!isProfileComplete}
-              className={`w-full flex items-center justify-between p-4 rounded-2xl font-bold transition-all ${activeTab === 'payment' ? 'bg-gradient-to-r from-blue/10 to-lavender/20 text-blue shadow-sm' : 'text-gray-600 hover:bg-gray-50'} ${!isProfileComplete && 'opacity-50 cursor-not-allowed'}`}
+              className={`w-full flex items-center justify-between p-4 rounded-2xl font-bold transition-all relative ${activeTab === 'payment' ? 'bg-gradient-to-r from-blue/10 to-lavender/20 text-blue shadow-sm' : 'text-gray-600 hover:bg-gray-50'} ${!isProfileComplete && 'opacity-50 cursor-not-allowed'}`}
             >
-              <div className="flex items-center gap-4">
-                <Banknote size={22} className={activeTab === 'payment' ? 'text-blue' : 'text-gray-400'} />
+              <div className="flex items-center gap-4 text-blue">
+                <Banknote size={22} />
                 6. Final Payment
               </div>
+              {approvedDealsCount > 0 && <span className="w-6 h-6 rounded-full bg-green-500 text-white text-xs flex items-center justify-center border-2 border-white font-black">{approvedDealsCount}</span>}
             </button>
             
             <div className="h-px bg-gray-100 my-2 w-full"></div>
@@ -1234,8 +1275,41 @@ export default function DashboardPage() {
               className={`w-full flex items-center gap-4 p-4 rounded-2xl font-bold transition-all ${activeTab === 'profile' ? 'bg-gray-100 text-gray-900 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}
             >
               <HelpCircle size={22} className={activeTab === 'profile' ? 'text-gray-900' : 'text-gray-400'} />
-              7. Help / Profile ID
+              7. Identity Card
             </button>
+
+            {/* Fixed Bottom Horizontal Bar for Mobile */}
+            <div className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-gray-200 px-6 py-3 flex justify-between items-center shadow-[0_-5px_20px_rgba(0,0,0,0.05)]">
+               <button onClick={() => setActiveTab("browse")} className={`flex flex-col items-center gap-1 focus:outline-none transition-transform active:scale-95 ${activeTab === "browse" ? 'text-purple' : 'text-gray-400'}`}>
+                 <PackageSearch size={22} />
+                 <span className="text-[10px] font-bold">Browse</span>
+               </button>
+               <button onClick={() => setActiveTab("chat")} className={`relative flex flex-col items-center gap-1 focus:outline-none transition-transform active:scale-95 ${activeTab === "chat" ? 'text-purple' : 'text-gray-400'}`}>
+                 <div className="relative">
+                   <MessageSquare size={22} />
+                   {unreadMessagesCount > 0 && <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 text-white text-[10px] flex items-center justify-center rounded-full font-black border border-white">{unreadMessagesCount}</span>}
+                 </div>
+                 <span className="text-[10px] font-bold">Chat</span>
+               </button>
+               <button onClick={() => setActiveTab("sell")} className={`relative flex flex-col items-center gap-1 focus:outline-none transition-transform active:scale-95 ${activeTab === "sell" ? 'text-purple' : 'text-gray-400'}`}>
+                 <div className="relative">
+                   <PlusCircle size={22} />
+                   {pendingOffersCount > 0 && <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-orange-500 text-white text-[10px] flex items-center justify-center rounded-full font-bold border border-white">{pendingOffersCount}</span>}
+                 </div>
+                 <span className="text-[10px] font-bold">Sell</span>
+               </button>
+               <button onClick={() => setActiveTab("payment")} className={`relative flex flex-col items-center gap-1 focus:outline-none transition-transform active:scale-95 ${activeTab === "payment" ? 'text-purple' : 'text-gray-400'}`}>
+                 <div className="relative">
+                   <Banknote size={22} />
+                   {approvedDealsCount > 0 && <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-green-500 text-white text-[10px] flex items-center justify-center rounded-full font-bold border border-white">{approvedDealsCount}</span>}
+                 </div>
+                 <span className="text-[10px] font-bold">Deals</span>
+               </button>
+               <button onClick={() => setActiveTab("profile")} className={`flex flex-col items-center gap-1 focus:outline-none transition-transform active:scale-95 ${activeTab === "profile" ? 'text-purple' : 'text-gray-400'}`}>
+                 <UserCircle size={22} />
+                 <span className="text-[10px] font-bold">Profile</span>
+               </button>
+            </div>
 
           </div>
           
